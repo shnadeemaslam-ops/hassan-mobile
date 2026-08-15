@@ -364,10 +364,6 @@
 <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore-compat.js"></script>
 <script>
 // OFFLINE PLACEHOLDER — Hassan Mobile ka apna Firebase project banne ke baad
-// yahan uska config (apiKey, authDomain, projectId, storageBucket,
-// messagingSenderId, appId) paste karein. Tab tak yeh app offline mode mein
-// chalega — koi live database se link nahi hai, isliye Hassan Multimedia ka
-// data safe hai.
 const firebaseConfig = {
   apiKey: "AIzaSyC_VrCz1HmgLeFyc_TyTClsWW_AugDWpbs",
   authDomain: "hassan-mobile-f34bf.firebaseapp.com",
@@ -604,11 +600,11 @@ function applyTheme(theme){
   } else {
     document.documentElement.setAttribute('data-theme', theme);
   }
-  try{ localStorage.setItem('shopManagerTheme', theme); }catch(e){}
+  try{ localStorage.setItem('hassanMobileTheme', theme); }catch(e){}
 }
 function loadSavedTheme(){
   let saved = null;
-  try{ saved = localStorage.getItem('shopManagerTheme'); }catch(e){}
+  try{ saved = localStorage.getItem('hassanMobileTheme'); }catch(e){}
   applyTheme(saved || 'dark');
 }
 function selectTheme(theme){
@@ -1116,13 +1112,13 @@ async function attemptUnlock(){
   const hash = await sha256(val);
   if(hash === security.passwordHash){
     userRole = 'owner';
-    try{ localStorage.setItem('shopManagerAuthRole', 'owner'); }catch(e){}
+    try{ localStorage.setItem('hassanMobileAuthRole', 'owner'); }catch(e){}
     document.getElementById('lockOverlay').remove();
     applyRoleRestrictions();
     await switchView('dashboard');
   } else if(security.staffPasswordHash && hash === security.staffPasswordHash){
     userRole = 'staff';
-    try{ localStorage.setItem('shopManagerAuthRole', 'staff'); }catch(e){}
+    try{ localStorage.setItem('hassanMobileAuthRole', 'staff'); }catch(e){}
     document.getElementById('lockOverlay').remove();
     applyRoleRestrictions();
     await switchView('inventory');
@@ -1137,7 +1133,7 @@ function lockApp(){
   showLockScreen();
 }
 function forgetDevice(){
-  try{ localStorage.removeItem('shopManagerAuthRole'); }catch(e){}
+  try{ localStorage.removeItem('hassanMobileAuthRole'); }catch(e){}
   document.querySelectorAll('.modal-overlay').forEach(el=>el.remove());
   showToast('Device logged out');
   lockApp();
@@ -3719,7 +3715,7 @@ async function exportBackup(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'Hassan-Mobile-backup-'+todayStr()+'.json';
+  a.download = 'shop-manager-backup-'+todayStr()+'.json';
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -3861,7 +3857,7 @@ document.addEventListener('wheel', e=>{
   updateLockButtonVisibility();
   startRealtimeSync();
   let savedRole = null;
-  try{ savedRole = localStorage.getItem('shopManagerAuthRole'); }catch(e){}
+  try{ savedRole = localStorage.getItem('hassanMobileAuthRole'); }catch(e){}
   if(savedRole==='owner' || savedRole==='staff'){
     userRole = savedRole;
     applyRoleRestrictions();
