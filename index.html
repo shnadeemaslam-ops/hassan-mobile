@@ -362,6 +362,7 @@
 
 <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
 // OFFLINE PLACEHOLDER — Hassan Mobile ka apna Firebase project banne ke baad
 const firebaseConfig = {
@@ -395,6 +396,20 @@ async function loadCategories(){
 }
 async function saveCategories(){
   try{ await db.collection('shop').doc('categories').set({list: categories}); return true; }
+  catch(e){ showToast('Cloud save failed — check internet connection'); return false; }
+}
+/* Shopping List categories are a completely separate list from the main
+   Inventory/Sale categories above — adding or deleting one here never
+   touches Inventory, Sale, or Reports. */
+let shoppingCategories = ['Restock','Customer Order'];
+async function loadShoppingCategories(){
+  try{
+    const doc = await db.collection('shop').doc('shoppingCategories').get();
+    if(doc.exists && doc.data().list && doc.data().list.length) shoppingCategories = doc.data().list;
+  }catch(e){ console.error(e); }
+}
+async function saveShoppingCategories(){
+  try{ await db.collection('shop').doc('shoppingCategories').set({list: shoppingCategories}); return true; }
   catch(e){ showToast('Cloud save failed — check internet connection'); return false; }
 }
 let partTypes = {
@@ -998,7 +1013,8 @@ function openInvoiceModal(dateStr, saleId){
       <label>Customer Mobile Number (optional)</label>
       <input id="inv_customer_mobile" type="tel" inputmode="tel" placeholder="e.g. 0300-1234567">
       ${contactPickBtn('inv_customer_name','inv_customer_mobile')}
-      <button class="primary" onclick="generateInvoice('${dateStr}','${saleId}')">Print Invoice</button>
+      <button class="primary" onclick="generateInvoice('${dateStr}','${saleId}','print')">🖨️ Print Invoice</button>
+      <button class="secondary" style="margin-top:10px" onclick="generateInvoice('${dateStr}','${saleId}','whatsapp')">📤 Send via WhatsApp</button>
     </div>`;
   document.getElementById('app').appendChild(overlay);
   overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
@@ -1055,7 +1071,7 @@ function buildInvoiceHTML(invoiceNumber, dateStr, customerName, customerMobile, 
     </div>
   `;
 }
-async function generateInvoice(dateStr, saleId){
+async function generateInvoice(dateStr, saleId, action){
   const sales = await loadSales(dateStr);
   const s = sales.find(x=>x.id===saleId);
   if(!s){ showToast('Sale not found'); return; }
@@ -1076,7 +1092,65 @@ async function generateInvoice(dateStr, saleId){
   if(overlay) overlay.remove();
 
   document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(s.invoiceNumber, dateStr, s.customerName, s.customerMobile, [s]);
-  setTimeout(()=>window.print(), 100);
+  if(action==='whatsapp') shareInvoiceOnWhatsApp(s.customerMobile, s.customerName);
+  else setTimeout(()=>window.print(), 100);
+}
+/* ---------------- WHATSAPP INVOICE SHARE ---------------- */
+function formatPhoneForWhatsApp(phone){
+  let digits = (phone||'').replace(/\D/g,'');
+  if(!digits) return '';
+  if(digits.startsWith('0')) digits = '92'+digits.slice(1);
+  else if(!digits.startsWith('92') && digits.length===10) digits = '92'+digits;
+  return digits;
+}
+async function shareInvoiceOnWhatsApp(customerMobile, customerName){
+  const area = document.getElementById('printReceiptArea');
+  if(!area || !area.innerHTML){ showToast('Generate the invoice first'); return; }
+  const phone = formatPhoneForWhatsApp(customerMobile);
+  const textMsg = `${settings.shopName || 'Hassan Mobile'} — Invoice for ${customerName || 'Walk-in Customer'}. Thank you for your purchase!`;
+  const openWhatsAppChat = ()=>{
+    const waUrl = phone ? `https://wa.me/${phone}?text=${encodeURIComponent(textMsg)}` : `https://wa.me/?text=${encodeURIComponent(textMsg)}`;
+    window.open(waUrl, '_blank');
+  };
+  if(typeof html2canvas !== 'function'){
+    showToast('Could not prepare invoice image — opening WhatsApp chat instead');
+    openWhatsAppChat();
+    return;
+  }
+  showToast('Preparing invoice…');
+  const prevStyle = area.getAttribute('style') || '';
+  area.style.cssText = 'position:fixed; left:-9999px; top:0; display:block; background:#fff;';
+  try{
+    const canvas = await html2canvas(area.firstElementChild, {scale:2, backgroundColor:'#ffffff'});
+    area.setAttribute('style', prevStyle);
+    canvas.toBlob(async(blob)=>{
+      if(!blob){ showToast('Could not create invoice image'); openWhatsAppChat(); return; }
+      const file = new File([blob], 'invoice.png', {type:'image/png'});
+      if(navigator.canShare && navigator.canShare({files:[file]})){
+        try{
+          await navigator.share({files:[file], title:'Invoice', text:textMsg});
+          return;
+        }catch(e){
+          if(e && e.name==='AbortError') return;
+          console.error(e);
+        }
+      }
+      // Fallback for browsers without file sharing (e.g. desktop Chrome):
+      // download the invoice image, then open the WhatsApp chat so it can be attached manually.
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'invoice.png';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 4000);
+      showToast('Invoice image downloaded — attach it in the WhatsApp chat that just opened');
+      openWhatsAppChat();
+    }, 'image/png');
+  }catch(e){
+    console.error(e);
+    area.setAttribute('style', prevStyle);
+    showToast('Could not prepare invoice image — opening WhatsApp chat instead');
+    openWhatsAppChat();
+  }
 }
 function openMultiInvoiceModal(){
   if(selectedSaleIds.size===0){ showToast('Select at least one item'); return; }
@@ -1090,12 +1164,13 @@ function openMultiInvoiceModal(){
       <label>Customer Mobile Number (optional)</label>
       <input id="inv_customer_mobile" type="tel" inputmode="tel" placeholder="e.g. 0300-1234567">
       ${contactPickBtn('inv_customer_name','inv_customer_mobile')}
-      <button class="primary" onclick="generateMultiInvoice()">Print Combined Invoice</button>
+      <button class="primary" onclick="generateMultiInvoice('print')">🖨️ Print Combined Invoice</button>
+      <button class="secondary" style="margin-top:10px" onclick="generateMultiInvoice('whatsapp')">📤 Send via WhatsApp</button>
     </div>`;
   document.getElementById('app').appendChild(overlay);
   overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
 }
-async function generateMultiInvoice(){
+async function generateMultiInvoice(action){
   const dateStr = todayStr();
   const sales = await loadSales(dateStr);
   const selected = sales.filter(s=>selectedSaleIds.has(s.id));
@@ -1119,7 +1194,8 @@ async function generateMultiInvoice(){
   if(overlay) overlay.remove();
 
   document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, dateStr, customerName, customerMobile, selected);
-  setTimeout(()=>window.print(), 100);
+  if(action==='whatsapp') shareInvoiceOnWhatsApp(customerMobile, customerName);
+  else setTimeout(()=>window.print(), 100);
   selectedSaleIds.clear();
   renderDashboard();
 }
@@ -1264,12 +1340,13 @@ function openReportMultiInvoiceModal(){
       <label>Customer Mobile Number (optional)</label>
       <input id="inv_customer_mobile" type="tel" inputmode="tel" placeholder="e.g. 0300-1234567">
       ${contactPickBtn('inv_customer_name','inv_customer_mobile')}
-      <button class="primary" onclick="generateReportMultiInvoice()">Print Combined Invoice</button>
+      <button class="primary" onclick="generateReportMultiInvoice('print')">🖨️ Print Combined Invoice</button>
+      <button class="secondary" style="margin-top:10px" onclick="generateReportMultiInvoice('whatsapp')">📤 Send via WhatsApp</button>
     </div>`;
   document.getElementById('app').appendChild(overlay);
   overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
 }
-async function generateReportMultiInvoice(){
+async function generateReportMultiInvoice(action){
   const customerName = document.getElementById('inv_customer_name').value.trim();
   const customerMobile = document.getElementById('inv_customer_mobile').value.trim();
 
@@ -1306,7 +1383,8 @@ async function generateReportMultiInvoice(){
 
   const displayDate = dates.length===1 ? dates[0] : `${dates[0]} to ${dates[dates.length-1]}`;
   document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, displayDate, customerName, customerMobile, combinedLineItems);
-  setTimeout(()=>window.print(), 100);
+  if(action==='whatsapp') shareInvoiceOnWhatsApp(customerMobile, customerName);
+  else setTimeout(()=>window.print(), 100);
   reportSelectedSales.clear();
   await renderReportBody();
 }
@@ -3198,10 +3276,13 @@ async function deleteCreditEntry(id){
 }
 
 let shoppingFilter = 'pending';
+let shoppingCategoryFilter = 'all';
 async function renderShopping(){
   let list = shoppingList;
   if(shoppingFilter==='pending') list = shoppingList.filter(s=>!s.bought);
   else if(shoppingFilter==='bought') list = shoppingList.filter(s=>s.bought);
+  if(shoppingCategoryFilter==='__none__') list = list.filter(s=>!s.category);
+  else if(shoppingCategoryFilter!=='all') list = list.filter(s=>s.category===shoppingCategoryFilter);
   list = list.slice().reverse();
 
   let html = `
@@ -3211,6 +3292,12 @@ async function renderShopping(){
       <div class="chip ${shoppingFilter==='bought'?'active':''}" onclick="setShoppingFilter('bought')">Purchased</div>
       <div class="chip ${shoppingFilter==='all'?'active':''}" onclick="setShoppingFilter('all')">All</div>
     </div>
+    <div class="chips" style="margin-top:-6px">
+      <div class="chip ${shoppingCategoryFilter==='all'?'active':''}" onclick="setShoppingCategoryFilter('all')">All Categories</div>
+      ${shoppingCategories.map(c=>`<div class="chip ${shoppingCategoryFilter===c?'active':''}" onclick="setShoppingCategoryFilter('${c.replace(/'/g,"\\'")}')">${c}</div>`).join('')}
+      <div class="chip ${shoppingCategoryFilter==='__none__'?'active':''}" onclick="setShoppingCategoryFilter('__none__')">No Category</div>
+    </div>
+    <button class="secondary" style="margin:-4px 0 14px; padding:8px 12px; font-size:12.5px;" onclick="openManageShoppingCategoriesModal()">✎ Manage Categories (Rename / Delete)</button>
     <div id="shoppingListBody"></div>
     <button class="primary" style="margin-top:6px" onclick="openShoppingModal()">+ Add Item to List</button>
   `;
@@ -3224,7 +3311,7 @@ async function renderShopping(){
     <div class="card">
       <div class="item-row">
         <div class="item-info">
-          <div class="item-name">${s.itemName}</div>
+          <div class="item-name">${s.itemName} ${s.category ? `<span class="badge ok" style="padding:2px 7px; font-size:10px; margin-left:4px;">${s.category}</span>` : ''}</div>
           ${s.customer ? `<div class="item-cat">For: ${s.customer}${s.customerPhone ? ' · '+s.customerPhone : ''}</div>` : ''}
           <div class="item-prices">${s.date}${s.bought?' · Bought on '+s.boughtDate:''}</div>
         </div>
@@ -3238,6 +3325,7 @@ async function renderShopping(){
   `).join('');
 }
 function setShoppingFilter(f){ shoppingFilter=f; renderShopping(); }
+function setShoppingCategoryFilter(c){ shoppingCategoryFilter=c; renderShopping(); }
 function openShoppingModal(){
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -3246,6 +3334,12 @@ function openShoppingModal(){
       <h3>Add Item to Shopping List</h3>
       <label>Item Name</label>
       <input id="sh_item" placeholder="e.g. Vivo Y21 battery">
+      <label>Category (optional)</label>
+      <select id="sh_cat" onchange="checkAddNewShoppingCategory()"></select>
+      <div id="shNewCatWrap" style="display:none">
+        <input id="sh_new_cat" placeholder="e.g. Customer Order">
+        <button type="button" class="secondary" style="width:100%; margin-bottom:12px" onclick="confirmNewShoppingCategory()">Add Category</button>
+      </div>
       <label>For Which Customer (optional)</label>
       <input id="sh_customer" list="customerDatalist" placeholder="e.g. Ahmed Bhai" oninput="autofillCustomerPhone('sh_customer','sh_customer_phone')">
       <label>Customer Phone Number (optional)</label>
@@ -3255,15 +3349,86 @@ function openShoppingModal(){
     </div>`;
   document.getElementById('app').appendChild(overlay);
   overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
+  populateShoppingCategorySelect();
   refreshCustomerDatalist();
+}
+function populateShoppingCategorySelect(selectedValue){
+  const sel = document.getElementById('sh_cat');
+  if(!sel) return;
+  sel.innerHTML = `<option value="">No category</option>` +
+    shoppingCategories.map(c=>`<option value="${c}" ${selectedValue===c?'selected':''}>${c}</option>`).join('')
+    + `<option value="__add_new__">+ Add New Category</option>`;
+  document.getElementById('shNewCatWrap').style.display = 'none';
+}
+function checkAddNewShoppingCategory(){
+  const sel = document.getElementById('sh_cat');
+  document.getElementById('shNewCatWrap').style.display = sel.value==='__add_new__' ? 'block' : 'none';
+}
+async function confirmNewShoppingCategory(){
+  const name = document.getElementById('sh_new_cat').value.trim();
+  if(!name){ showToast('Category name is required'); return; }
+  if(!shoppingCategories.includes(name)) shoppingCategories.push(name);
+  await saveShoppingCategories();
+  populateShoppingCategorySelect(name);
+  showToast('New category added ✓');
+}
+function openManageShoppingCategoriesModal(){ renderManageShoppingCategoriesModal(); }
+function renderManageShoppingCategoriesModal(){
+  const existing = document.getElementById('manageShCatOverlay');
+  if(existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'manageShCatOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Shopping List Categories</h3>
+      <p style="color:var(--muted); font-size:12px; margin:-6px 0 14px;">These are separate from your Inventory categories — changes here never affect Inventory, Sale, or Reports.</p>
+      ${shoppingCategories.length===0 ? '<p style="color:var(--muted); font-size:13px; margin-bottom:14px;">No categories yet.</p>' : shoppingCategories.map((c,idx)=>`
+        <div style="display:flex; gap:8px; margin-bottom:10px; align-items:center;">
+          <input id="sh_cat_edit_${idx}" value="${c}" style="margin-bottom:0; flex:1">
+          <button class="secondary" style="padding:10px 12px" onclick="saveShoppingCategoryRename(${idx})">Save</button>
+          <button class="danger-text" onclick="deleteShoppingCategoryEntry(${idx})">Delete</button>
+        </div>
+      `).join('')}
+      <button class="secondary" style="width:100%; margin-top:6px" onclick="document.getElementById('manageShCatOverlay').remove()">Close</button>
+    </div>`;
+  document.getElementById('app').appendChild(overlay);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
+}
+async function saveShoppingCategoryRename(idx){
+  const input = document.getElementById('sh_cat_edit_'+idx);
+  const newVal = input.value.trim();
+  if(!newVal){ showToast('Name cannot be empty'); return; }
+  const oldVal = shoppingCategories[idx];
+  if(newVal!==oldVal){
+    shoppingCategories[idx] = newVal;
+    shoppingList.forEach(s=>{ if(s.category===oldVal) s.category = newVal; });
+    await saveShoppingCategories();
+    await saveShopping();
+    if(shoppingCategoryFilter===oldVal) shoppingCategoryFilter=newVal;
+    showToast('Category updated ✓');
+  }
+  if(document.getElementById('sh_cat')) populateShoppingCategorySelect(newVal);
+  renderManageShoppingCategoriesModal();
+}
+async function deleteShoppingCategoryEntry(idx){
+  const removedName = shoppingCategories[idx];
+  shoppingCategories.splice(idx,1);
+  await saveShoppingCategories();
+  showToast('Category deleted');
+  if(document.getElementById('sh_cat')) populateShoppingCategorySelect();
+  if(shoppingCategoryFilter===removedName) shoppingCategoryFilter='all';
+  renderManageShoppingCategoriesModal();
 }
 async function saveShoppingItem(){
   const itemName = document.getElementById('sh_item').value.trim();
+  const catSel = document.getElementById('sh_cat');
+  const category = (catSel && catSel.value && catSel.value!=='__add_new__') ? catSel.value : '';
   const customer = document.getElementById('sh_customer').value.trim();
   const customerPhone = document.getElementById('sh_customer_phone').value.trim();
   if(!itemName){ showToast('Item name is required'); return; }
   if(customer) await findOrCreateCustomer(customer, customerPhone);
-  shoppingList.push({id:uid(), itemName, customer, customerPhone, bought:false, date:todayStr(), boughtDate:null});
+  shoppingList.push({id:uid(), itemName, category, customer, customerPhone, bought:false, date:todayStr(), boughtDate:null});
   await saveShopping();
   document.querySelector('.modal-overlay').remove();
   showToast('Added to shopping list');
@@ -3996,7 +4161,7 @@ document.addEventListener('wheel', e=>{
     document.getElementById('view').innerHTML = `<div class="empty" style="padding:40px 20px; line-height:1.7;">Could not connect to the cloud database.<br>Please check your internet connection and reopen the app.</div>`;
     return;
   }
-  await Promise.all([loadItems(), loadSettings(), loadPartTypes(), loadSecurity(), loadCredit(), loadShopping(), loadExpenses(), loadCategories(), loadSubPartTypes(), loadServiceSubTypes(), loadCustomers(), loadRepairJobs()]);
+  await Promise.all([loadItems(), loadSettings(), loadPartTypes(), loadSecurity(), loadCredit(), loadShopping(), loadExpenses(), loadCategories(), loadShoppingCategories(), loadSubPartTypes(), loadServiceSubTypes(), loadCustomers(), loadRepairJobs()]);
   // One-time default seeding, guarded by a flag so renamed categories/sub-categories
   // are never re-injected on later app loads (previously this ran every launch by
   // checking hardcoded default names, which kept resurrecting renamed categories).
