@@ -1013,14 +1013,36 @@ function openInvoiceModal(dateStr, saleId){
       <label>Customer Mobile Number (optional)</label>
       <input id="inv_customer_mobile" type="tel" inputmode="tel" placeholder="e.g. 0300-1234567">
       ${contactPickBtn('inv_customer_name','inv_customer_mobile')}
+      <label>Discount (Rs, optional)</label>
+      <input id="inv_discount" type="number" inputmode="decimal" placeholder="0">
       <button class="primary" onclick="generateInvoice('${dateStr}','${saleId}','print')">🖨️ Print Invoice</button>
       <button class="secondary" style="margin-top:10px" onclick="generateInvoice('${dateStr}','${saleId}','whatsapp')">📤 Send via WhatsApp</button>
     </div>`;
   document.getElementById('app').appendChild(overlay);
   overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
 }
-function buildInvoiceHTML(invoiceNumber, dateStr, customerName, customerMobile, lineItems){
+function applyDiscountToLineItems(lineItems, discount){
+  if(!discount || discount<=0) return;
+  const originalTotal = lineItems.reduce((s,li)=>s+li.totalSell,0);
+  if(originalTotal<=0) return;
+  let remaining = discount;
+  lineItems.forEach((li,idx)=>{
+    let share;
+    if(idx===lineItems.length-1){
+      share = remaining; // last item absorbs any rounding leftover
+    } else {
+      share = Math.round(discount * (li.totalSell/originalTotal));
+      remaining -= share;
+    }
+    share = Math.max(0, Math.min(share, li.totalSell));
+    li.totalSell -= share;
+    li.unitSell = li.qty>0 ? +(li.totalSell/li.qty).toFixed(2) : li.unitSell;
+    li.totalProfit = li.totalSell - (li.unitCost*li.qty);
+  });
+}
+function buildInvoiceHTML(invoiceNumber, dateStr, customerName, customerMobile, lineItems, discount){
   const grandTotal = lineItems.reduce((s,li)=>s+li.totalSell, 0);
+  const subtotal = grandTotal + (discount||0);
   const rows = lineItems.map(li=>`
         <tr style="border-bottom:1px solid #ddd;">
           <td style="padding:8px 6px;">${li.name}</td>
@@ -1058,8 +1080,14 @@ function buildInvoiceHTML(invoiceNumber, dateStr, customerName, customerMobile, 
           </table>
 
           <div style="margin-top:auto; padding-top:10px;">
-            <div style="border-top:1px solid #999; padding-top:8px; display:flex; justify-content:flex-end;">
-              <div style="font-size:16px; font-weight:bold;">Grand Total: ${fmtMoney(grandTotal)}</div>
+            <div style="border-top:1px solid #999; padding-top:8px;">
+              ${discount>0 ? `
+                <div style="display:flex; justify-content:flex-end; font-size:12.5px; color:#444;">Subtotal: ${fmtMoney(subtotal)}</div>
+                <div style="display:flex; justify-content:flex-end; font-size:12.5px; color:#B00020; margin-top:2px;">Discount: -${fmtMoney(discount)}</div>
+              ` : ''}
+              <div style="display:flex; justify-content:flex-end; margin-top:4px;">
+                <div style="font-size:16px; font-weight:bold;">Grand Total: ${fmtMoney(grandTotal)}</div>
+              </div>
             </div>
             <div style="text-align:center; font-size:11px; color:#666; margin-top:8px;">
               Thank you for choosing Hassan Mobile — All Your Tech Needs, One Trusted Place.
@@ -1077,6 +1105,9 @@ async function generateInvoice(dateStr, saleId, action){
   if(!s){ showToast('Sale not found'); return; }
   const customerName = document.getElementById('inv_customer_name').value.trim();
   const customerMobile = document.getElementById('inv_customer_mobile').value.trim();
+  let discount = parseFloat(document.getElementById('inv_discount').value)||0;
+  if(discount<0) discount = 0;
+  if(discount>=s.totalSell){ showToast('Discount must be less than the total amount'); return; }
 
   if(!s.invoiceNumber){
     if(!settings.nextInvoiceNumber) settings.nextInvoiceNumber = 1001;
@@ -1086,12 +1117,13 @@ async function generateInvoice(dateStr, saleId, action){
   }
   if(customerName) s.customerName = customerName;
   if(customerMobile) s.customerMobile = customerMobile;
+  if(discount>0) applyDiscountToLineItems([s], discount);
   await saveSales(dateStr, sales);
 
   const overlay = document.querySelector('.modal-overlay');
   if(overlay) overlay.remove();
 
-  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(s.invoiceNumber, dateStr, s.customerName, s.customerMobile, [s]);
+  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(s.invoiceNumber, dateStr, s.customerName, s.customerMobile, [s], discount);
   if(action==='whatsapp') shareInvoiceOnWhatsApp(s.customerMobile, s.customerName);
   else setTimeout(()=>window.print(), 100);
 }
@@ -1164,6 +1196,8 @@ function openMultiInvoiceModal(){
       <label>Customer Mobile Number (optional)</label>
       <input id="inv_customer_mobile" type="tel" inputmode="tel" placeholder="e.g. 0300-1234567">
       ${contactPickBtn('inv_customer_name','inv_customer_mobile')}
+      <label>Discount (Rs, optional)</label>
+      <input id="inv_discount" type="number" inputmode="decimal" placeholder="0">
       <button class="primary" onclick="generateMultiInvoice('print')">🖨️ Print Combined Invoice</button>
       <button class="secondary" style="margin-top:10px" onclick="generateMultiInvoice('whatsapp')">📤 Send via WhatsApp</button>
     </div>`;
@@ -1177,6 +1211,10 @@ async function generateMultiInvoice(action){
   if(selected.length===0){ showToast('Selected items not found'); return; }
   const customerName = document.getElementById('inv_customer_name').value.trim();
   const customerMobile = document.getElementById('inv_customer_mobile').value.trim();
+  const originalTotal = selected.reduce((s,li)=>s+li.totalSell,0);
+  let discount = parseFloat(document.getElementById('inv_discount').value)||0;
+  if(discount<0) discount = 0;
+  if(discount>=originalTotal){ showToast('Discount must be less than the total amount'); return; }
 
   if(!settings.nextInvoiceNumber) settings.nextInvoiceNumber = 1001;
   const invoiceNumber = settings.nextInvoiceNumber;
@@ -1188,12 +1226,13 @@ async function generateMultiInvoice(action){
     if(customerName) s.customerName = customerName;
     if(customerMobile) s.customerMobile = customerMobile;
   });
+  if(discount>0) applyDiscountToLineItems(selected, discount);
   await saveSales(dateStr, sales);
 
   const overlay = document.querySelector('.modal-overlay');
   if(overlay) overlay.remove();
 
-  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, dateStr, customerName, customerMobile, selected);
+  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, dateStr, customerName, customerMobile, selected, discount);
   if(action==='whatsapp') shareInvoiceOnWhatsApp(customerMobile, customerName);
   else setTimeout(()=>window.print(), 100);
   selectedSaleIds.clear();
@@ -1340,6 +1379,8 @@ function openReportMultiInvoiceModal(){
       <label>Customer Mobile Number (optional)</label>
       <input id="inv_customer_mobile" type="tel" inputmode="tel" placeholder="e.g. 0300-1234567">
       ${contactPickBtn('inv_customer_name','inv_customer_mobile')}
+      <label>Discount (Rs, optional)</label>
+      <input id="inv_discount" type="number" inputmode="decimal" placeholder="0">
       <button class="primary" onclick="generateReportMultiInvoice('print')">🖨️ Print Combined Invoice</button>
       <button class="secondary" style="margin-top:10px" onclick="generateReportMultiInvoice('whatsapp')">📤 Send via WhatsApp</button>
     </div>`;
@@ -1363,9 +1404,11 @@ async function generateReportMultiInvoice(action){
   });
 
   const combinedLineItems = [];
+  const salesByDate = {};
   const dates = Object.keys(byDate).sort();
   for(const dateStr of dates){
     const sales = await loadSales(dateStr);
+    salesByDate[dateStr] = sales;
     const ids = byDate[dateStr];
     sales.forEach(s=>{
       if(ids.includes(s.id)){
@@ -1375,14 +1418,23 @@ async function generateReportMultiInvoice(action){
         combinedLineItems.push(s);
       }
     });
-    await saveSales(dateStr, sales);
+  }
+
+  const originalTotal = combinedLineItems.reduce((s,li)=>s+li.totalSell,0);
+  let discount = parseFloat(document.getElementById('inv_discount').value)||0;
+  if(discount<0) discount = 0;
+  if(discount>=originalTotal){ showToast('Discount must be less than the total amount'); return; }
+  if(discount>0) applyDiscountToLineItems(combinedLineItems, discount);
+
+  for(const dateStr of dates){
+    await saveSales(dateStr, salesByDate[dateStr]);
   }
 
   const overlay = document.querySelector('.modal-overlay');
   if(overlay) overlay.remove();
 
   const displayDate = dates.length===1 ? dates[0] : `${dates[0]} to ${dates[dates.length-1]}`;
-  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, displayDate, customerName, customerMobile, combinedLineItems);
+  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, displayDate, customerName, customerMobile, combinedLineItems, discount);
   if(action==='whatsapp') shareInvoiceOnWhatsApp(customerMobile, customerName);
   else setTimeout(()=>window.print(), 100);
   reportSelectedSales.clear();
@@ -2246,9 +2298,26 @@ function setSaleMode(m){ saleMode = m; renderSale(); }
 let saleItemSearch = '';
 let salePartTypeFilter = 'all';
 let saleSubTypeFilter = 'all';
+let billActive = false;
+let billCart = [];
+let billCustomer = { name:'', phone:'' };
 function renderItemSale(){
   const cats = ['all', ...categories.filter(c=>c!=='Model Compatibility')];
-  let html = `<div class="search-wrap">
+  const billBarHtml = billActive ? `
+    <div class="card" style="border:1.5px solid var(--accent); margin-bottom:14px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div style="font-weight:700; font-size:14px;">🧾 Bill — ${billCustomer.name || 'Walk-in Customer'}</div>
+          <div style="color:var(--muted); font-size:12.5px; margin-top:2px;">${billCart.length} item${billCart.length===1?'':'s'} · ${fmtMoney(billCart.reduce((s,c)=>s+c.unitSell*c.qty,0))}</div>
+        </div>
+        <button class="secondary" style="padding:6px 10px; font-size:12px;" onclick="cancelBill()">✕ Cancel</button>
+      </div>
+      <button class="primary" style="width:100%; margin-top:10px;" onclick="openBillCheckoutModal()" ${billCart.length===0?'disabled':''}>View Bill & Checkout →</button>
+    </div>` : `
+    <button class="secondary" style="width:100%; margin-bottom:14px;" onclick="openStartBillModal()">🧾 Start New Bill (Multiple Items)</button>`;
+  let html = `
+    ${billBarHtml}
+    <div class="search-wrap">
       <input id="saleSearchInput" placeholder="Search model (e.g. Infinix Hot 10)" value="${saleItemSearch}" oninput="setSaleSearch(this.value)">
       <button type="button" class="mic-btn" id="saleMicBtn" onclick="startVoiceSearch('sale')" title="Search by voice">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><path d="M12 19v4M8 23h8"/></svg>
@@ -2289,9 +2358,13 @@ function renderItemSale(){
     return;
   }
   listEl.innerHTML = list.map(i=>{
-    const disabled = i.qty===0;
+    const reserved = billActive ? billCart.filter(c=>c.itemId===i.id).reduce((s,c)=>s+c.qty,0) : 0;
+    const availableQty = i.qty - reserved;
+    const disabled = availableQty<=0;
     const modelsHtml = (i.models&&i.models.length>0) ? `<div class="item-cat" style="margin-top:2px">Fits: ${highlightModels(i.models, q)}</div>` : '';
     const catLabel = [i.category, i.partType, i.subPartType].filter(Boolean).join(' · ');
+    const btnLabel = billActive ? '➕ Add to Bill' : 'Sell';
+    const btnAction = billActive ? `openAddToBillModal('${i.id}')` : `openSaleModal('${i.id}')`;
     return `<div class="card" style="${disabled?'opacity:.5':''}">
       <div class="item-row">
         <div class="item-info">
@@ -2299,15 +2372,261 @@ function renderItemSale(){
           <div class="item-cat">${catLabel} · ${fmtMoney(i.sell)}</div>
           ${modelsHtml}
         </div>
-        <span class="badge ${i.qty===0?'out':(i.qty<=2?'low':'ok')}">${i.qty===0?'Out':i.qty+' pcs'}</span>
+        <span class="badge ${availableQty===0?'out':(availableQty<=2?'low':'ok')}">${availableQty===0?'Out':availableQty+' pcs'}</span>
       </div>
-      ${disabled ? '' : `<button class="secondary" style="width:100%; margin-top:10px" onclick="openSaleModal('${i.id}')">Sell</button>`}
+      ${disabled ? '' : `<button class="secondary" style="width:100%; margin-top:10px" onclick="${btnAction}">${btnLabel}</button>`}
     </div>`;
   }).join('');
 }
 function setSaleFilter(c){ saleFilter = c; salePartTypeFilter = 'all'; saleSubTypeFilter = 'all'; renderItemSale(); }
 function setSalePartFilter(p){ salePartTypeFilter = p; saleSubTypeFilter = 'all'; renderItemSale(); }
 function setSaleSubFilter(p){ saleSubTypeFilter = p; renderItemSale(); }
+
+/* ---------------- MULTI-ITEM BILL (CART) ---------------- */
+function openStartBillModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Start New Bill</h3>
+      <p style="color:var(--muted); font-size:12.5px; margin-bottom:14px; line-height:1.6;">Add the customer's details once, then add all their items to this bill — a single invoice will be made at the end.</p>
+      <label>Customer Name (optional)</label>
+      <input id="bill_customer_name" placeholder="e.g. Amir Bhai">
+      <label>Customer Phone Number (optional)</label>
+      <input id="bill_customer_phone" placeholder="e.g. 0300-1234567">
+      ${contactPickBtn('bill_customer_name','bill_customer_phone')}
+      <button class="primary" onclick="confirmStartBill()">Start Adding Items</button>
+    </div>`;
+  document.getElementById('app').appendChild(overlay);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
+  refreshCustomerDatalist();
+}
+function confirmStartBill(){
+  billCustomer.name = document.getElementById('bill_customer_name').value.trim();
+  billCustomer.phone = document.getElementById('bill_customer_phone').value.trim();
+  billActive = true;
+  billCart = [];
+  document.querySelector('.modal-overlay').remove();
+  renderItemSale();
+}
+function cancelBill(){
+  if(billCart.length>0 && !confirm('Cancel this bill? Items added so far will be discarded — nothing will be saved.')) return;
+  billActive = false;
+  billCart = [];
+  billCustomer = { name:'', phone:'' };
+  renderItemSale();
+}
+function openAddToBillModal(id){
+  const it = items.find(i=>i.id===id);
+  const reserved = billCart.filter(c=>c.itemId===id).reduce((s,c)=>s+c.qty,0);
+  const available = it.qty - reserved;
+  if(available<=0){ showToast('No more stock available for this item'); return; }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>${it.name} — Add to Bill</h3>
+      <div style="text-align:center; color:var(--muted); font-size:13px; margin-bottom:10px">Available: ${available} pcs · Actual Price: ${fmtMoney(it.sell)}</div>
+      <div class="qty-stepper">
+        <button onclick="stepBillQty(-1,'${id}',${available})">−</button>
+        <div class="qty-val" id="billQtyVal">1</div>
+        <button onclick="stepBillQty(1,'${id}',${available})">+</button>
+      </div>
+      <label>Sale Price (per piece) — change here to give a discount</label>
+      <input id="billPriceInput" type="number" inputmode="decimal" value="${it.sell}">
+      <button class="primary" onclick="confirmAddToBill('${id}')">➕ Add to Bill</button>
+    </div>`;
+  overlay.dataset.qty = 1;
+  document.getElementById('app').appendChild(overlay);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
+}
+function stepBillQty(delta, id, max){
+  const overlay = document.querySelector('.modal-overlay');
+  let q = parseInt(overlay.dataset.qty)+delta;
+  if(q<1) q=1;
+  if(q>max) q=max;
+  overlay.dataset.qty = q;
+  document.getElementById('billQtyVal').textContent = q;
+}
+function confirmAddToBill(id){
+  const it = items.find(i=>i.id===id);
+  const overlay = document.querySelector('.modal-overlay');
+  const qty = parseInt(overlay.dataset.qty);
+  const unitSell = parseFloat(document.getElementById('billPriceInput').value)||0;
+  billCart.push({ itemId: it.id, name: it.name, qty, unitCost: it.cost, unitSell, category: it.category });
+  overlay.remove();
+  showToast(`${it.name} added to bill ✓`);
+  renderItemSale();
+}
+function removeBillCartLine(idx){
+  billCart.splice(idx,1);
+  if(billCart.length===0){ document.querySelector('.modal-overlay')?.remove(); renderItemSale(); return; }
+  openBillCheckoutModal();
+}
+function openBillCheckoutModal(){
+  if(billCart.length===0){ showToast('Add at least one item to the bill'); return; }
+  const subtotal = billCart.reduce((s,c)=>s+c.unitSell*c.qty,0);
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Review Bill — ${billCustomer.name || 'Walk-in Customer'}</h3>
+      <div style="max-height:220px; overflow-y:auto; margin-bottom:14px;">
+        ${billCart.map((c,idx)=>`
+          <div class="item-row" style="padding:8px 0; border-bottom:1px solid var(--border);">
+            <div class="item-info">
+              <div class="item-name">${c.name}</div>
+              <div class="item-cat">${c.qty} × ${fmtMoney(c.unitSell)} = ${fmtMoney(c.qty*c.unitSell)}</div>
+            </div>
+            <button class="danger-text" style="padding:4px 8px;" onclick="removeBillCartLine(${idx})">✕</button>
+          </div>`).join('')}
+      </div>
+      <div style="text-align:right; font-weight:700; font-size:15px; margin-bottom:14px;">Subtotal: ${fmtMoney(subtotal)}</div>
+      <label>Customer Name ${((billCustomer.name)?'':'(optional)')}</label>
+      <input id="bill_co_name" value="${billCustomer.name||''}">
+      <label>Customer Phone Number (optional)</label>
+      <input id="bill_co_phone" value="${billCustomer.phone||''}">
+      ${contactPickBtn('bill_co_name','bill_co_phone')}
+      <label>Payment</label>
+      <div style="display:flex; gap:8px; margin-bottom:14px;">
+        <div id="billPayCash" class="chip active" style="flex:1; text-align:center; padding:10px; font-size:12.5px;" onclick="setBillPaymentMethod('cash')">💵 Full Cash</div>
+        <div id="billPayPartial" class="chip" style="flex:1; text-align:center; padding:10px; font-size:12.5px;" onclick="setBillPaymentMethod('partial')">🔀 Partial</div>
+        <div id="billPayCredit" class="chip" style="flex:1; text-align:center; padding:10px; font-size:12.5px;" onclick="setBillPaymentMethod('credit')">📒 Full Udhaar</div>
+      </div>
+      <div id="billPartialWrap" style="display:none">
+        <label>Cash Received Now (Rs)</label>
+        <input id="billPartialCash" type="number" inputmode="decimal" value="0" oninput="updateBillPartialPreview()">
+        <div id="billPartialPreview" style="color:var(--muted); font-size:12px; margin:-8px 0 14px;"></div>
+      </div>
+      <div id="billCreditNote" style="display:none; color:var(--muted); font-size:12px; margin:-8px 0 14px;">Customer name is required for Udhaar — the pending amount will be saved to the Credit Ledger.</div>
+      <label>Discount (Rs) — optional</label>
+      <input id="bill_discount" type="number" inputmode="decimal" placeholder="e.g. 150">
+      <button class="primary" onclick="checkoutBill('print')">🖨 Save Bill & Print Invoice</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="checkoutBill('whatsapp')">📤 Save Bill & Send via WhatsApp</button>
+    </div>`;
+  overlay.dataset.paymentMethod = 'cash';
+  overlay.dataset.subtotal = subtotal;
+  document.getElementById('app').appendChild(overlay);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
+  refreshCustomerDatalist();
+}
+function setBillPaymentMethod(method){
+  const overlay = document.querySelector('.modal-overlay');
+  overlay.dataset.paymentMethod = method;
+  document.getElementById('billPayCash').classList.toggle('active', method==='cash');
+  document.getElementById('billPayPartial').classList.toggle('active', method==='partial');
+  document.getElementById('billPayCredit').classList.toggle('active', method==='credit');
+  document.getElementById('billCreditNote').style.display = (method==='credit'||method==='partial') ? 'block' : 'none';
+  document.getElementById('billPartialWrap').style.display = method==='partial' ? 'block' : 'none';
+  if(method==='partial') updateBillPartialPreview();
+}
+function updateBillPartialPreview(){
+  const overlay = document.querySelector('.modal-overlay');
+  const total = parseFloat(overlay.dataset.subtotal)||0;
+  let cash = parseFloat(document.getElementById('billPartialCash').value)||0;
+  if(cash<0) cash=0;
+  if(cash>total) cash=total;
+  const remaining = total-cash;
+  document.getElementById('billPartialPreview').textContent = `Total: ${fmtMoney(total)} · Cash now: ${fmtMoney(cash)} · Udhaar (pending): ${fmtMoney(remaining)}`;
+}
+async function checkoutBill(action){
+  const overlay = document.querySelector('.modal-overlay');
+  const customerName = document.getElementById('bill_co_name').value.trim();
+  const customerPhone = document.getElementById('bill_co_phone').value.trim();
+  const paymentMethod = overlay.dataset.paymentMethod || 'cash';
+  let discount = parseFloat(document.getElementById('bill_discount').value)||0;
+  if(discount<0) discount = 0;
+  const subtotal = billCart.reduce((s,c)=>s+c.unitSell*c.qty,0);
+  if(discount>=subtotal){ showToast('Discount must be less than the total amount'); return; }
+
+  let cashReceived = subtotal, creditAmount = 0;
+  if(paymentMethod==='credit'){
+    cashReceived = 0; creditAmount = subtotal;
+  } else if(paymentMethod==='partial'){
+    cashReceived = parseFloat(document.getElementById('billPartialCash').value)||0;
+    if(cashReceived<0) cashReceived = 0;
+    if(cashReceived>subtotal) cashReceived = subtotal;
+    creditAmount = subtotal - cashReceived;
+  }
+  if((paymentMethod==='credit'||paymentMethod==='partial') && !customerName){
+    showToast('Customer name is required for Udhaar sales');
+    return;
+  }
+  if(paymentMethod==='partial' && creditAmount<=0){
+    showToast('Enter an amount less than the total for Partial, or use Full Cash instead');
+    return;
+  }
+
+  const cartSnapshot = billCart.map(c=>({...c}));
+  const dateToUse = saleDate || todayStr();
+
+  // Reserve stock immediately (optimistic) so the shop doesn't have to wait on a slow connection.
+  for(const c of cartSnapshot){
+    const it = items.find(i=>i.id===c.itemId);
+    if(it) it.qty -= c.qty;
+  }
+  billActive = false;
+  billCart = [];
+  billCustomer = { name:'', phone:'' };
+  overlay.remove();
+  showToast('Bill saved ✓ — items added to today\'s sale');
+  refreshCurrentView();
+
+  if(!settings.nextInvoiceNumber) settings.nextInvoiceNumber = 1001;
+  const invoiceNumber = settings.nextInvoiceNumber;
+  settings.nextInvoiceNumber += 1;
+
+  try{
+    await saveSettings();
+    for(const c of cartSnapshot){
+      const it = items.find(i=>i.id===c.itemId);
+      if(it) await saveItem(it);
+    }
+    let customerId = null;
+    if(customerName) customerId = await findOrCreateCustomer(customerName, customerPhone);
+
+    const sales = await loadSales(dateToUse);
+    const now = new Date();
+    const timeStr = String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
+    const newSaleEntries = cartSnapshot.map(c=>{
+      const totalSell = c.unitSell*c.qty;
+      const totalProfit = (c.unitSell-c.unitCost)*c.qty;
+      const share = subtotal>0 ? totalSell/subtotal : 0;
+      return {
+        id: uid(), itemId: c.itemId, name: c.name, qty: c.qty,
+        unitCost: c.unitCost, unitSell: c.unitSell,
+        totalSell, totalProfit, time: timeStr,
+        category: c.category, customerName: customerName||null, customerId,
+        paymentMethod, cashReceived: Math.round(cashReceived*share), creditAmount: Math.round(creditAmount*share),
+        invoiceNumber
+      };
+    });
+
+    if(paymentMethod==='credit' || paymentMethod==='partial'){
+      const desc = `Bill #${String(invoiceNumber).padStart(5,'0')} — ${cartSnapshot.length} item(s): ${cartSnapshot.map(c=>c.name).join(', ')}`;
+      creditEntries.push({
+        id:uid(), customer:customerName, description:desc,
+        amount: creditAmount, paid:false, date:dateToUse, paidDate:null, payments:[],
+        saleId: 'bill-'+invoiceNumber
+      });
+      await saveCredit();
+    }
+
+    const originalLineItems = newSaleEntries.map(s=>({...s}));
+    if(discount>0) applyDiscountToLineItems(newSaleEntries, discount);
+    sales.push(...newSaleEntries);
+    await saveSales(dateToUse, sales);
+
+    document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, dateToUse, customerName, customerPhone, originalLineItems, discount);
+    if(action==='whatsapp') shareInvoiceOnWhatsApp(customerPhone, customerName);
+    else setTimeout(()=>window.print(), 100);
+
+    refreshCurrentView();
+  }catch(e){
+    console.error(e);
+    showToast('Bill could not be fully saved — check internet connection');
+  }
+}
 function setSaleSearch(v){ saleItemSearch = v; renderItemSale(); }
 
 function renderServiceForm(){
