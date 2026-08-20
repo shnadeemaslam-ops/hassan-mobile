@@ -1118,17 +1118,26 @@ async function generateInvoice(dateStr, saleId, action){
   }
   if(customerName) s.customerName = customerName;
   if(customerMobile) s.customerMobile = customerMobile;
+  const originalLineItems = [{...s}]; // snapshot for invoice display (before discount is applied to the saved record)
   if(discount>0) applyDiscountToLineItems([s], discount);
   await saveSales(dateStr, sales);
+
+  const subtotal = originalLineItems.reduce((sum,li)=>sum+li.totalSell, 0);
+  await saveInvoiceRecord({
+    invoiceNumber: s.invoiceNumber, date: dateStr,
+    customerName: s.customerName||'', customerMobile: s.customerMobile||'', customerId: s.customerId||null,
+    items: originalLineItems, subtotal, discount, grandTotal: subtotal-discount,
+    saleRefs: [{date: dateStr, id: saleId}], createdAt: new Date().toISOString()
+  });
 
   const overlay = document.querySelector('.modal-overlay');
   if(overlay) overlay.remove();
 
-  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(s.invoiceNumber, dateStr, s.customerName, s.customerMobile, [s], discount);
+  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(s.invoiceNumber, dateStr, s.customerName, s.customerMobile, originalLineItems, discount);
   if(action==='whatsapp'){
-    sendInvoiceViaWhatsApp(s.invoiceNumber, dateStr, s.customerMobile, [s], discount);
+    sendInvoiceViaWhatsApp(s.invoiceNumber, dateStr, s.customerMobile, originalLineItems, discount);
   } else if(action==='shareimage'){
-    shareInvoiceAsImage(s.invoiceNumber, dateStr, s.customerName, s.customerMobile, [s], discount);
+    shareInvoiceAsImage(s.invoiceNumber, dateStr, s.customerName, s.customerMobile, originalLineItems, discount);
   } else {
     setTimeout(()=>window.print(), 100);
   }
@@ -1244,22 +1253,265 @@ async function generateMultiInvoice(action){
     if(customerName) s.customerName = customerName;
     if(customerMobile) s.customerMobile = customerMobile;
   });
+  const originalLineItems = selected.map(s=>({...s})); // snapshot for invoice display
   if(discount>0) applyDiscountToLineItems(selected, discount);
   await saveSales(dateStr, sales);
+
+  const subtotal = originalLineItems.reduce((sum,li)=>sum+li.totalSell, 0);
+  await saveInvoiceRecord({
+    invoiceNumber, date: dateStr,
+    customerName: customerName||'', customerMobile: customerMobile||'', customerId: null,
+    items: originalLineItems, subtotal, discount, grandTotal: subtotal-discount,
+    saleRefs: originalLineItems.map(s=>({date: dateStr, id: s.id})), createdAt: new Date().toISOString()
+  });
 
   const overlay = document.querySelector('.modal-overlay');
   if(overlay) overlay.remove();
 
-  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, dateStr, customerName, customerMobile, selected, discount);
+  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, dateStr, customerName, customerMobile, originalLineItems, discount);
   if(action==='whatsapp'){
-    sendInvoiceViaWhatsApp(invoiceNumber, dateStr, customerMobile, selected, discount);
+    sendInvoiceViaWhatsApp(invoiceNumber, dateStr, customerMobile, originalLineItems, discount);
   } else if(action==='shareimage'){
-    shareInvoiceAsImage(invoiceNumber, dateStr, customerName, customerMobile, selected, discount);
+    shareInvoiceAsImage(invoiceNumber, dateStr, customerName, customerMobile, originalLineItems, discount);
   } else {
     setTimeout(()=>window.print(), 100);
   }
   selectedSaleIds.clear();
   renderDashboard();
+}
+
+/* ---------------- INVOICE RECORDS (searchable bill history) ---------------- */
+// Every time an invoice is printed/WhatsApp'd/shared, a record is saved here so it can
+// later be found, viewed, edited or deleted — independent of the day-to-day sales log.
+async function saveInvoiceRecord(record){
+  try{
+    await db.collection('invoices').doc(String(record.invoiceNumber)).set(record);
+    if(!invoicesCache) invoicesCache = [];
+    const idx = invoicesCache.findIndex(i=>i.invoiceNumber===record.invoiceNumber);
+    if(idx>-1) invoicesCache[idx] = record; else invoicesCache.unshift(record);
+  }catch(e){ console.error(e); showToast('Invoice sent, but the searchable record failed to save'); }
+}
+let invoicesCache = null;
+let invoiceSearchQuery = '';
+let unsubInvoicesListener = null;
+// Kept subscribed for the whole session (started at app init) so invoices created on
+// another device (e.g. mobile vs PC) show up here live, without needing a page reload.
+function subscribeToInvoices(){
+  if(unsubInvoicesListener) return;
+  unsubInvoicesListener = db.collection('invoices').onSnapshot(snap=>{
+    invoicesCache = snap.docs.map(d=>d.data()).sort((a,b)=> b.invoiceNumber - a.invoiceNumber);
+    if(currentView==='invoices') renderInvoiceList();
+  }, e=>console.error(e));
+}
+async function renderInvoices(){
+  subscribeToInvoices();
+  document.getElementById('view').innerHTML = `
+    <button class="secondary" style="margin-bottom:14px" onclick="switchView('more')">← Back</button>
+    <div class="search-wrap">
+      <input id="invoiceSearchInput" placeholder="Search invoice #, customer name or mobile" value="${invoiceSearchQuery}" oninput="setInvoiceSearch(this.value)">
+    </div>
+    <div id="invoiceListArea"></div>`;
+  const inp = document.getElementById('invoiceSearchInput');
+  inp.focus();
+  inp.selectionStart = inp.selectionEnd = invoiceSearchQuery.length;
+  renderInvoiceList();
+}
+function setInvoiceSearch(v){ invoiceSearchQuery = v; renderInvoiceList(); }
+function renderInvoiceList(){
+  const el = document.getElementById('invoiceListArea');
+  if(!el) return;
+  if(invoicesCache===null){
+    el.innerHTML = `<div class="empty">Loading invoices...</div>`;
+    return;
+  }
+  const q = invoiceSearchQuery.trim().toLowerCase();
+  const qDigits = q.replace(/\D/g,'');
+  let list = invoicesCache || [];
+  if(q){
+    list = list.filter(inv=>{
+      const numMatch = String(inv.invoiceNumber).includes(q);
+      const nameMatch = (inv.customerName||'').toLowerCase().includes(q);
+      const mobileMatch = qDigits.length>0 && (inv.customerMobile||'').replace(/\D/g,'').includes(qDigits);
+      return numMatch || nameMatch || mobileMatch;
+    });
+  }
+  if(list.length===0){
+    el.innerHTML = `<div class="empty">${q ? 'No invoice found for "'+invoiceSearchQuery+'"' : 'No invoices yet — invoices you Print, WhatsApp or Share as image will appear here.'}</div>`;
+    return;
+  }
+  el.innerHTML = list.map(inv=>`
+    <div class="card" style="cursor:pointer" onclick="openInvoiceDetailModal(${inv.invoiceNumber})">
+      <div class="item-row">
+        <div class="item-info">
+          <div class="item-name">Invoice #${String(inv.invoiceNumber).padStart(5,'0')} — ${inv.customerName || 'Walk-in Customer'}</div>
+          <div class="item-cat">${inv.date} · ${inv.items.length} item${inv.items.length===1?'':'s'}${inv.customerMobile?(' · '+inv.customerMobile):''}</div>
+        </div>
+        <span class="badge ok">${fmtMoney(inv.grandTotal)}</span>
+      </div>
+    </div>`).join('');
+}
+function openInvoiceDetailModal(invoiceNumber){
+  const inv = (invoicesCache||[]).find(i=>i.invoiceNumber===invoiceNumber);
+  if(!inv){ showToast('Invoice not found'); return; }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Invoice #${String(inv.invoiceNumber).padStart(5,'0')}</h3>
+      <div style="color:var(--muted); font-size:13px; margin-bottom:10px;">
+        ${inv.date} · ${inv.customerName || 'Walk-in Customer'}${inv.customerMobile?(' · '+inv.customerMobile):''}
+      </div>
+      <div style="max-height:200px; overflow-y:auto; margin-bottom:12px;">
+        ${inv.items.map(li=>`
+          <div class="item-row" style="padding:6px 0; border-bottom:1px solid var(--border);">
+            <div class="item-info">
+              <div class="item-name">${li.name}</div>
+              <div class="item-cat">${li.qty} × ${fmtMoney(li.unitSell)}</div>
+            </div>
+            <div>${fmtMoney(li.totalSell)}</div>
+          </div>`).join('')}
+      </div>
+      <div style="text-align:right; margin-bottom:14px;">
+        ${inv.discount>0 ? `<div style="color:var(--muted); font-size:13px;">Subtotal: ${fmtMoney(inv.subtotal)}</div><div style="color:#c0392b; font-size:13px;">Discount: -${fmtMoney(inv.discount)}</div>` : ''}
+        <div style="font-weight:700; font-size:16px;">Grand Total: ${fmtMoney(inv.grandTotal)}</div>
+      </div>
+      <button class="primary" onclick="printStoredInvoice(${inv.invoiceNumber})">🖨 Print</button>
+      <button class="secondary" style="width:100%; margin-top:10px; background:#25D366; color:#fff; border-color:#25D366" onclick="whatsappStoredInvoice(${inv.invoiceNumber})">📲 Send via WhatsApp</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="shareImageStoredInvoice(${inv.invoiceNumber})">🖼 Share Invoice Image</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="openEditInvoiceModal(${inv.invoiceNumber})">✏️ Edit</button>
+      <button class="danger-text" style="margin-top:14px" onclick="confirmDeleteInvoice(${inv.invoiceNumber})">Delete Invoice</button>
+    </div>`;
+  document.getElementById('app').appendChild(overlay);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
+}
+function printStoredInvoice(invoiceNumber){
+  const inv = (invoicesCache||[]).find(i=>i.invoiceNumber===invoiceNumber);
+  if(!inv) return;
+  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(inv.invoiceNumber, inv.date, inv.customerName, inv.customerMobile, inv.items, inv.discount);
+  setTimeout(()=>window.print(), 100);
+}
+function whatsappStoredInvoice(invoiceNumber){
+  const inv = (invoicesCache||[]).find(i=>i.invoiceNumber===invoiceNumber);
+  if(!inv) return;
+  sendInvoiceViaWhatsApp(inv.invoiceNumber, inv.date, inv.customerMobile, inv.items, inv.discount);
+}
+function shareImageStoredInvoice(invoiceNumber){
+  const inv = (invoicesCache||[]).find(i=>i.invoiceNumber===invoiceNumber);
+  if(!inv) return;
+  shareInvoiceAsImage(inv.invoiceNumber, inv.date, inv.customerName, inv.customerMobile, inv.items, inv.discount);
+}
+function openEditInvoiceModal(invoiceNumber){
+  const inv = (invoicesCache||[]).find(i=>i.invoiceNumber===invoiceNumber);
+  if(!inv) return;
+  document.querySelector('.modal-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Edit Invoice #${String(inv.invoiceNumber).padStart(5,'0')}</h3>
+      <label>Customer Name</label>
+      <input id="ei_name" value="${inv.customerName||''}">
+      <label>Customer Mobile Number</label>
+      <input id="ei_mobile" value="${inv.customerMobile||''}">
+      ${contactPickBtn('ei_name','ei_mobile')}
+      <label>Discount (Rs)</label>
+      <input id="ei_discount" type="number" inputmode="decimal" value="${inv.discount||0}">
+      <p style="color:var(--muted); font-size:12px; margin-bottom:14px; line-height:1.6;">Saves the updated customer info and discount here and keeps that day's Sale/Dashboard/Report totals in sync. Item quantities and prices aren't editable here — delete the invoice and re-sell if an item itself was wrong.</p>
+      <button class="primary" onclick="saveInvoiceEdit(${inv.invoiceNumber})">Save Changes</button>
+    </div>`;
+  document.getElementById('app').appendChild(overlay);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
+  refreshCustomerDatalist();
+}
+async function saveInvoiceEdit(invoiceNumber){
+  const inv = (invoicesCache||[]).find(i=>i.invoiceNumber===invoiceNumber);
+  if(!inv) return;
+  const newName = document.getElementById('ei_name').value.trim();
+  const newMobile = document.getElementById('ei_mobile').value.trim();
+  const newDiscount = parseFloat(document.getElementById('ei_discount').value)||0;
+
+  // Recompute from the ORIGINAL (undiscounted) item snapshot every time, so repeated
+  // edits never compound a previously-applied discount.
+  const freshItems = inv.items.map(li=>({...li}));
+  applyDiscountToLineItems(freshItems, newDiscount);
+  const saleIdToItem = {};
+  (inv.saleRefs||[]).forEach((r,idx)=>{ saleIdToItem[r.id] = freshItems[idx]; });
+
+  const byDate = {};
+  (inv.saleRefs||[]).forEach(r=>{ if(!byDate[r.date]) byDate[r.date]=[]; byDate[r.date].push(r.id); });
+  for(const dateStr of Object.keys(byDate)){
+    const sales = await loadSales(dateStr);
+    let changed = false;
+    sales.forEach(s=>{
+      if(byDate[dateStr].includes(s.id)){
+        const match = saleIdToItem[s.id];
+        if(match){ s.totalSell = match.totalSell; s.totalProfit = match.totalProfit; }
+        s.customerName = newName || null;
+        s.customerMobile = newMobile || null;
+        changed = true;
+      }
+    });
+    if(changed) await saveSales(dateStr, sales);
+  }
+
+  inv.customerName = newName;
+  inv.customerMobile = newMobile;
+  inv.discount = newDiscount;
+  inv.grandTotal = inv.subtotal - newDiscount;
+  await saveInvoiceRecord(inv);
+
+  document.querySelectorAll('.modal-overlay').forEach(o=>o.remove());
+  showToast('Invoice updated ✓');
+  renderInvoiceList();
+  if(currentView==='dashboard') await renderDashboard();
+}
+function confirmDeleteInvoice(invoiceNumber){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'deleteInvoiceConfirmOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Delete Invoice #${String(invoiceNumber).padStart(5,'0')}?</h3>
+      <p style="color:var(--muted); font-size:13.5px; margin-bottom:18px; line-height:1.7;">
+        This removes all items in this invoice from that day's Sale, restores their stock, and removes any linked Udhaar entry. This cannot be undone.
+      </p>
+      <button class="primary" style="background:var(--red)" onclick="deleteInvoiceRecord(${invoiceNumber})">Yes, Delete It</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="document.getElementById('deleteInvoiceConfirmOverlay').remove()">Cancel</button>
+    </div>`;
+  document.getElementById('app').appendChild(overlay);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
+}
+async function deleteInvoiceRecord(invoiceNumber){
+  const inv = (invoicesCache||[]).find(i=>i.invoiceNumber===invoiceNumber);
+  if(!inv){ showToast('Invoice not found'); return; }
+  const byDate = {};
+  (inv.saleRefs||[]).forEach(r=>{ if(!byDate[r.date]) byDate[r.date]=[]; byDate[r.date].push(r.id); });
+  const deletedIds = new Set((inv.saleRefs||[]).map(r=>r.id));
+
+  for(const dateStr of Object.keys(byDate)){
+    const sales = await loadSales(dateStr);
+    const ids = byDate[dateStr];
+    for(const s of sales){
+      if(ids.includes(s.id) && s.itemId){
+        const it = items.find(i=>i.id===s.itemId);
+        if(it){ it.qty += s.qty; await saveItem(it); }
+      }
+    }
+    const remaining = sales.filter(s=>!ids.includes(s.id));
+    await saveSales(dateStr, remaining);
+  }
+
+  const beforeLen = creditEntries.length;
+  creditEntries = creditEntries.filter(c=> !deletedIds.has(c.saleId) && c.saleId!=='bill-'+invoiceNumber);
+  if(creditEntries.length!==beforeLen) await saveCredit();
+
+  try{ await db.collection('invoices').doc(String(invoiceNumber)).delete(); }catch(e){ console.error(e); }
+  invoicesCache = (invoicesCache||[]).filter(i=>i.invoiceNumber!==invoiceNumber);
+
+  document.querySelectorAll('.modal-overlay').forEach(o=>o.remove());
+  showToast('Invoice deleted ✓ — stock restored');
+  if(currentView==='invoices') renderInvoiceList();
+  if(currentView==='dashboard') await renderDashboard();
 }
 
 /* ---------------- LOCK SCREEN ---------------- */
@@ -1329,7 +1581,7 @@ async function switchView(v){
     v = 'inventory';
   }
   currentView = v;
-  const navKey = (v==='credit'||v==='shopping'||v==='expense'||v==='customers'||v==='customerDetail'||v==='repairJobs'||v==='modelCompat') ? 'more' : v;
+  const navKey = (v==='credit'||v==='shopping'||v==='expense'||v==='customers'||v==='customerDetail'||v==='repairJobs'||v==='modelCompat'||v==='invoices') ? 'more' : v;
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active', b.dataset.view===navKey));
   document.getElementById('fabBtn').style.display = (v==='dashboard' && userRole!=='staff') ? 'flex' : 'none';
   const el = document.getElementById('view');
@@ -1346,6 +1598,7 @@ async function switchView(v){
   else if(v==='customerDetail') await renderCustomerDetail(currentCustomerId);
   else if(v==='repairJobs') await renderRepairJobs();
   else if(v==='modelCompat') await renderModelCompat();
+  else if(v==='invoices') await renderInvoices();
 }
 
 /* ---------------- DASHBOARD ---------------- */
@@ -1428,6 +1681,7 @@ async function generateReportMultiInvoice(action){
   });
 
   const combinedLineItems = [];
+  const combinedSaleRefs = []; // built in the same order as combinedLineItems
   const salesByDate = {};
   const dates = Object.keys(byDate).sort();
   for(const dateStr of dates){
@@ -1440,6 +1694,7 @@ async function generateReportMultiInvoice(action){
         if(customerName) s.customerName = customerName;
         if(customerMobile) s.customerMobile = customerMobile;
         combinedLineItems.push(s);
+        combinedSaleRefs.push({date: dateStr, id: s.id});
       }
     });
   }
@@ -1448,21 +1703,30 @@ async function generateReportMultiInvoice(action){
   let discount = parseFloat(document.getElementById('inv_discount').value)||0;
   if(discount<0) discount = 0;
   if(discount>=originalTotal){ showToast('Discount must be less than the total amount'); return; }
+  const originalLineItems = combinedLineItems.map(s=>({...s})); // snapshot for invoice display
   if(discount>0) applyDiscountToLineItems(combinedLineItems, discount);
 
   for(const dateStr of dates){
     await saveSales(dateStr, salesByDate[dateStr]);
   }
 
+  const displayDate = dates.length===1 ? dates[0] : `${dates[0]} to ${dates[dates.length-1]}`;
+  const subtotal = originalLineItems.reduce((sum,li)=>sum+li.totalSell, 0);
+  await saveInvoiceRecord({
+    invoiceNumber, date: displayDate,
+    customerName: customerName||'', customerMobile: customerMobile||'', customerId: null,
+    items: originalLineItems, subtotal, discount, grandTotal: subtotal-discount,
+    saleRefs: combinedSaleRefs, createdAt: new Date().toISOString()
+  });
+
   const overlay = document.querySelector('.modal-overlay');
   if(overlay) overlay.remove();
 
-  const displayDate = dates.length===1 ? dates[0] : `${dates[0]} to ${dates[dates.length-1]}`;
-  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, displayDate, customerName, customerMobile, combinedLineItems, discount);
+  document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, displayDate, customerName, customerMobile, originalLineItems, discount);
   if(action==='whatsapp'){
-    sendInvoiceViaWhatsApp(invoiceNumber, displayDate, customerMobile, combinedLineItems, discount);
+    sendInvoiceViaWhatsApp(invoiceNumber, displayDate, customerMobile, originalLineItems, discount);
   } else if(action==='shareimage'){
-    shareInvoiceAsImage(invoiceNumber, displayDate, customerName, customerMobile, combinedLineItems, discount);
+    shareInvoiceAsImage(invoiceNumber, displayDate, customerName, customerMobile, originalLineItems, discount);
   } else {
     setTimeout(()=>window.print(), 100);
   }
@@ -2647,6 +2911,14 @@ async function checkoutBill(action){
     sales.push(...newSaleEntries);
     await saveSales(dateToUse, sales);
 
+    const subtotalForRecord = originalLineItems.reduce((sum,li)=>sum+li.totalSell, 0);
+    await saveInvoiceRecord({
+      invoiceNumber, date: dateToUse,
+      customerName: customerName||'', customerMobile: customerPhone||'', customerId,
+      items: originalLineItems, subtotal: subtotalForRecord, discount, grandTotal: subtotalForRecord-discount,
+      saleRefs: originalLineItems.map(s=>({date: dateToUse, id: s.id})), createdAt: new Date().toISOString()
+    });
+
     document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, dateToUse, customerName, customerPhone, originalLineItems, discount);
     if(action==='whatsapp'){
       sendInvoiceViaWhatsApp(invoiceNumber, dateToUse, customerPhone, originalLineItems, discount);
@@ -3430,6 +3702,15 @@ async function renderMore(){
   const pendingShopping = shoppingList.filter(s=>!s.bought);
   const totalExpenses = expenseEntries.reduce((s,e)=>s+e.amount,0);
   document.getElementById('view').innerHTML = `
+    <div class="card" style="cursor:pointer" onclick="switchView('invoices')">
+      <div class="item-row">
+        <div class="item-info">
+          <div class="item-name">Invoices</div>
+          <div class="item-cat">Search &amp; manage all bills sent to customers</div>
+        </div>
+        <span style="font-size:22px; color:var(--muted)">›</span>
+      </div>
+    </div>
     <div class="card" style="cursor:pointer" onclick="switchView('credit')">
       <div class="item-row">
         <div class="item-info">
