@@ -1016,7 +1016,8 @@ function openInvoiceModal(dateStr, saleId){
       <label>Discount (Rs, optional)</label>
       <input id="inv_discount" type="number" inputmode="decimal" placeholder="0">
       <button class="primary" onclick="generateInvoice('${dateStr}','${saleId}','print')">🖨️ Print Invoice</button>
-      <button class="secondary" style="margin-top:10px" onclick="generateInvoice('${dateStr}','${saleId}','whatsapp')">📤 Send via WhatsApp</button>
+      <button class="secondary" style="width:100%; margin-top:10px; background:#25D366; color:#fff; border-color:#25D366" onclick="generateInvoice('${dateStr}','${saleId}','whatsapp')">📲 Send via WhatsApp</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="generateInvoice('${dateStr}','${saleId}','shareimage')">🖼 Share Invoice Image</button>
     </div>`;
   document.getElementById('app').appendChild(overlay);
   overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
@@ -1124,64 +1125,80 @@ async function generateInvoice(dateStr, saleId, action){
   if(overlay) overlay.remove();
 
   document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(s.invoiceNumber, dateStr, s.customerName, s.customerMobile, [s], discount);
-  if(action==='whatsapp') shareInvoiceOnWhatsApp(s.customerMobile, s.customerName);
-  else setTimeout(()=>window.print(), 100);
+  if(action==='whatsapp'){
+    sendInvoiceViaWhatsApp(s.invoiceNumber, dateStr, s.customerMobile, [s], discount);
+  } else if(action==='shareimage'){
+    shareInvoiceAsImage(s.invoiceNumber, dateStr, s.customerName, s.customerMobile, [s], discount);
+  } else {
+    setTimeout(()=>window.print(), 100);
+  }
 }
-/* ---------------- WHATSAPP INVOICE SHARE ---------------- */
+/* ---------------- WHATSAPP INVOICE SENDING ---------------- */
 function formatPhoneForWhatsApp(phone){
   let digits = (phone||'').replace(/\D/g,'');
   if(!digits) return '';
-  if(digits.startsWith('0')) digits = '92'+digits.slice(1);
-  else if(!digits.startsWith('92') && digits.length===10) digits = '92'+digits;
+  if(digits.startsWith('0')) digits = '92'+digits.slice(1); // Pakistan: leading 0 -> country code 92
+  else if(digits.startsWith('3') && digits.length===10) digits = '92'+digits; // e.g. 3001234567
   return digits;
 }
-async function shareInvoiceOnWhatsApp(customerMobile, customerName){
-  const area = document.getElementById('printReceiptArea');
-  if(!area || !area.innerHTML){ showToast('Generate the invoice first'); return; }
+function buildInvoiceWhatsAppText(invoiceNumber, dateStr, lineItems, discount){
+  discount = discount || 0;
+  const grandTotal = lineItems.reduce((s,li)=>s+li.totalSell, 0);
+  const subtotal = grandTotal + discount;
+  const rows = lineItems.map(li=>`• ${li.name} x${li.qty} — ${fmtMoney(li.totalSell)}`).join('\n');
+  const totalsBlock = discount>0
+    ? `Subtotal: ${fmtMoney(subtotal)}\nDiscount: -${fmtMoney(discount)}\n*Grand Total: ${fmtMoney(grandTotal)}*`
+    : `*Grand Total: ${fmtMoney(grandTotal)}*`;
+  return `*${settings.shopName}*\nInvoice #${String(invoiceNumber).padStart(5,'0')}\nDate: ${dateStr}\n\n${rows}\n\n${totalsBlock}\n\nThank you for choosing ${settings.shopName}!`;
+}
+function sendInvoiceViaWhatsApp(invoiceNumber, dateStr, customerMobile, lineItems, discount){
+  const text = buildInvoiceWhatsAppText(invoiceNumber, dateStr, lineItems, discount);
+  const encoded = encodeURIComponent(text);
   const phone = formatPhoneForWhatsApp(customerMobile);
-  const textMsg = `${settings.shopName || 'Hassan Mobile'} — Invoice for ${customerName || 'Walk-in Customer'}. Thank you for your purchase!`;
-  const openWhatsAppChat = ()=>{
-    const waUrl = phone ? `https://wa.me/${phone}?text=${encodeURIComponent(textMsg)}` : `https://wa.me/?text=${encodeURIComponent(textMsg)}`;
-    window.open(waUrl, '_blank');
-  };
-  if(typeof html2canvas !== 'function'){
-    showToast('Could not prepare invoice image — opening WhatsApp chat instead');
-    openWhatsAppChat();
-    return;
-  }
-  showToast('Preparing invoice…');
-  const prevStyle = area.getAttribute('style') || '';
-  area.style.cssText = 'position:fixed; left:-9999px; top:0; display:block; background:#fff;';
+  const url = phone ? `https://wa.me/${phone}?text=${encoded}` : `https://wa.me/?text=${encoded}`;
+  window.open(url, '_blank');
+  if(!phone) showToast('No customer number — pick a contact on WhatsApp to send to');
+}
+async function shareInvoiceAsImage(invoiceNumber, dateStr, customerName, customerMobile, lineItems, discount){
+  if(typeof html2canvas==='undefined'){ showToast('Image sharing is still loading — try again in a moment'); return; }
+  showToast('Preparing invoice image...');
+  const invoiceLabel = `Invoice #${String(invoiceNumber).padStart(5,'0')}`;
+  let container;
   try{
-    const canvas = await html2canvas(area.firstElementChild, {scale:2, backgroundColor:'#ffffff'});
-    area.setAttribute('style', prevStyle);
-    canvas.toBlob(async(blob)=>{
-      if(!blob){ showToast('Could not create invoice image'); openWhatsAppChat(); return; }
-      const file = new File([blob], 'invoice.png', {type:'image/png'});
-      if(navigator.canShare && navigator.canShare({files:[file]})){
+    const html = buildInvoiceHTML(invoiceNumber, dateStr, customerName, customerMobile, lineItems, discount);
+    container = document.createElement('div');
+    container.style.cssText = 'position:fixed; left:-9999px; top:0; width:794px; background:#fff;';
+    container.innerHTML = html;
+    document.body.appendChild(container);
+    const imgs = container.querySelectorAll('img');
+    await Promise.all(Array.from(imgs).map(img=> img.complete ? Promise.resolve() : new Promise(res=>{ img.onload=res; img.onerror=res; })));
+    const canvas = await html2canvas(container, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+    document.body.removeChild(container); container = null;
+
+    canvas.toBlob(async (blob)=>{
+      if(!blob){ showToast('Could not create invoice image'); return; }
+      const fileName = `${invoiceLabel}.png`;
+      const file = new File([blob], fileName, { type: 'image/png' });
+      if(navigator.canShare && navigator.canShare({ files: [file] })){
         try{
-          await navigator.share({files:[file], title:'Invoice', text:textMsg});
-          return;
+          const fullText = buildInvoiceWhatsAppText(invoiceNumber, dateStr, lineItems, discount);
+          await navigator.share({ files: [file], title: invoiceLabel, text: fullText });
         }catch(e){
-          if(e && e.name==='AbortError') return;
-          console.error(e);
+          if(e.name!=='AbortError') showToast('Could not open share menu');
         }
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = fileName;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+        showToast('Sharing not supported here — image downloaded, attach it manually');
       }
-      // Fallback for browsers without file sharing (e.g. desktop Chrome):
-      // download the invoice image, then open the WhatsApp chat so it can be attached manually.
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'invoice.png';
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(()=>URL.revokeObjectURL(url), 4000);
-      showToast('Invoice image downloaded — attach it in the WhatsApp chat that just opened');
-      openWhatsAppChat();
     }, 'image/png');
   }catch(e){
     console.error(e);
-    area.setAttribute('style', prevStyle);
-    showToast('Could not prepare invoice image — opening WhatsApp chat instead');
-    openWhatsAppChat();
+    if(container && container.parentNode) container.parentNode.removeChild(container);
+    showToast('Could not create invoice image');
   }
 }
 function openMultiInvoiceModal(){
@@ -1199,7 +1216,8 @@ function openMultiInvoiceModal(){
       <label>Discount (Rs, optional)</label>
       <input id="inv_discount" type="number" inputmode="decimal" placeholder="0">
       <button class="primary" onclick="generateMultiInvoice('print')">🖨️ Print Combined Invoice</button>
-      <button class="secondary" style="margin-top:10px" onclick="generateMultiInvoice('whatsapp')">📤 Send via WhatsApp</button>
+      <button class="secondary" style="width:100%; margin-top:10px; background:#25D366; color:#fff; border-color:#25D366" onclick="generateMultiInvoice('whatsapp')">📲 Send via WhatsApp</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="generateMultiInvoice('shareimage')">🖼 Share Invoice Image</button>
     </div>`;
   document.getElementById('app').appendChild(overlay);
   overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
@@ -1233,8 +1251,13 @@ async function generateMultiInvoice(action){
   if(overlay) overlay.remove();
 
   document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, dateStr, customerName, customerMobile, selected, discount);
-  if(action==='whatsapp') shareInvoiceOnWhatsApp(customerMobile, customerName);
-  else setTimeout(()=>window.print(), 100);
+  if(action==='whatsapp'){
+    sendInvoiceViaWhatsApp(invoiceNumber, dateStr, customerMobile, selected, discount);
+  } else if(action==='shareimage'){
+    shareInvoiceAsImage(invoiceNumber, dateStr, customerName, customerMobile, selected, discount);
+  } else {
+    setTimeout(()=>window.print(), 100);
+  }
   selectedSaleIds.clear();
   renderDashboard();
 }
@@ -1382,7 +1405,8 @@ function openReportMultiInvoiceModal(){
       <label>Discount (Rs, optional)</label>
       <input id="inv_discount" type="number" inputmode="decimal" placeholder="0">
       <button class="primary" onclick="generateReportMultiInvoice('print')">🖨️ Print Combined Invoice</button>
-      <button class="secondary" style="margin-top:10px" onclick="generateReportMultiInvoice('whatsapp')">📤 Send via WhatsApp</button>
+      <button class="secondary" style="width:100%; margin-top:10px; background:#25D366; color:#fff; border-color:#25D366" onclick="generateReportMultiInvoice('whatsapp')">📲 Send via WhatsApp</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="generateReportMultiInvoice('shareimage')">🖼 Share Invoice Image</button>
     </div>`;
   document.getElementById('app').appendChild(overlay);
   overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
@@ -1435,8 +1459,13 @@ async function generateReportMultiInvoice(action){
 
   const displayDate = dates.length===1 ? dates[0] : `${dates[0]} to ${dates[dates.length-1]}`;
   document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, displayDate, customerName, customerMobile, combinedLineItems, discount);
-  if(action==='whatsapp') shareInvoiceOnWhatsApp(customerMobile, customerName);
-  else setTimeout(()=>window.print(), 100);
+  if(action==='whatsapp'){
+    sendInvoiceViaWhatsApp(invoiceNumber, displayDate, customerMobile, combinedLineItems, discount);
+  } else if(action==='shareimage'){
+    shareInvoiceAsImage(invoiceNumber, displayDate, customerName, customerMobile, combinedLineItems, discount);
+  } else {
+    setTimeout(()=>window.print(), 100);
+  }
   reportSelectedSales.clear();
   await renderReportBody();
 }
@@ -2502,7 +2531,8 @@ function openBillCheckoutModal(){
       <label>Discount (Rs) — optional</label>
       <input id="bill_discount" type="number" inputmode="decimal" placeholder="e.g. 150">
       <button class="primary" onclick="checkoutBill('print')">🖨 Save Bill & Print Invoice</button>
-      <button class="secondary" style="width:100%; margin-top:10px" onclick="checkoutBill('whatsapp')">📤 Save Bill & Send via WhatsApp</button>
+      <button class="secondary" style="width:100%; margin-top:10px; background:#25D366; color:#fff; border-color:#25D366" onclick="checkoutBill('whatsapp')">📲 Save Bill & Send via WhatsApp</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="checkoutBill('shareimage')">🖼 Save Bill & Share Invoice Image</button>
     </div>`;
   overlay.dataset.paymentMethod = 'cash';
   overlay.dataset.subtotal = subtotal;
@@ -2618,8 +2648,13 @@ async function checkoutBill(action){
     await saveSales(dateToUse, sales);
 
     document.getElementById('printReceiptArea').innerHTML = buildInvoiceHTML(invoiceNumber, dateToUse, customerName, customerPhone, originalLineItems, discount);
-    if(action==='whatsapp') shareInvoiceOnWhatsApp(customerPhone, customerName);
-    else setTimeout(()=>window.print(), 100);
+    if(action==='whatsapp'){
+      sendInvoiceViaWhatsApp(invoiceNumber, dateToUse, customerPhone, originalLineItems, discount);
+    } else if(action==='shareimage'){
+      shareInvoiceAsImage(invoiceNumber, dateToUse, customerName, customerPhone, originalLineItems, discount);
+    } else {
+      setTimeout(()=>window.print(), 100);
+    }
 
     refreshCurrentView();
   }catch(e){
