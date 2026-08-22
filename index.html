@@ -8,7 +8,11 @@
 <meta name="apple-mobile-web-app-title" content="Hassan Mobile">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0B1220">
+<link rel="manifest" href="manifest.json">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%230B1220'/%3E%3Ccircle cx='50' cy='50' r='30' fill='%23F2A93B'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <title>Hassan Mobile</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
@@ -2957,7 +2961,9 @@ async function checkoutBill(action){
 }
 function setSaleSearch(v){ saleItemSearch = v; renderItemSale(); }
 
+let svcProfitVisible = false;
 function renderServiceForm(){
+  svcProfitVisible = false;
   document.getElementById('saleModeBody').innerHTML = `
     <div class="card">
       <label>Service Type</label>
@@ -2989,7 +2995,8 @@ function renderServiceForm(){
       <input id="svc_amount" type="number" inputmode="decimal" placeholder="0" oninput="updateServiceProfitPreview()">
       <label>Quantity</label>
       <input id="svc_qty" type="number" inputmode="numeric" value="1" oninput="updateServiceProfitPreview()">
-      <div style="text-align:center; margin-bottom:16px; font-family:'JetBrains Mono'; color:var(--green)">Profit: <span id="svcProfitPreview">Rs 0</span></div>
+      <div id="svcProfitPreviewWrap" ondblclick="toggleServiceProfitPreview()" style="text-align:center; margin-bottom:2px; font-family:'JetBrains Mono'; color:var(--green); cursor:pointer; user-select:none;"><span id="svcProfitPreview" data-amt="0">*****</span></div>
+      <div id="svcProfitPreviewHint" style="text-align:center; font-size:10px; color:var(--muted); margin-bottom:14px;">Double-tap to reveal</div>
       <label>Customer Name (optional)</label>
       <input id="svc_customer_name" list="customerDatalist" placeholder="e.g. Ahmed Bhai" oninput="autofillCustomerPhone('svc_customer_name','svc_customer_phone')">
       <label>Customer Phone Number (optional)</label>
@@ -3086,7 +3093,20 @@ function updateServiceProfitPreview(){
   const qty = parseInt(document.getElementById('svc_qty').value)||1;
   const partCostEl = document.getElementById('svc_part_cost');
   const partCost = partCostEl ? (parseFloat(partCostEl.value)||0) : 0;
-  document.getElementById('svcProfitPreview').textContent = fmtMoney((amount-partCost)*qty);
+  const amt = (amount-partCost)*qty;
+  const el = document.getElementById('svcProfitPreview');
+  if(el){
+    el.dataset.amt = amt;
+    el.textContent = svcProfitVisible ? ('Profit: '+fmtMoney(amt)) : '*****';
+  }
+}
+function toggleServiceProfitPreview(){
+  svcProfitVisible = !svcProfitVisible;
+  const el = document.getElementById('svcProfitPreview');
+  const amt = parseFloat(el.dataset.amt)||0;
+  el.textContent = svcProfitVisible ? ('Profit: '+fmtMoney(amt)) : '*****';
+  const hint = document.getElementById('svcProfitPreviewHint');
+  if(hint) hint.textContent = svcProfitVisible ? '' : 'Double-tap to reveal';
 }
 async function submitService(){
   const type = document.getElementById('svc_type').value;
@@ -3123,6 +3143,8 @@ async function submitService(){
   showToast(dateToUse===todayStr() ? 'Added ✓' : `Added for ${dateToUse} ✓`);
   document.getElementById('svc_amount').value='';
   document.getElementById('svc_qty').value=1;
+  svcProfitVisible = false;
+  if(document.getElementById('svcProfitPreviewHint')) document.getElementById('svcProfitPreviewHint').textContent = 'Double-tap to reveal';
   if(document.getElementById('svc_part_name')) document.getElementById('svc_part_name').value='';
   if(document.getElementById('svc_part_cost')) document.getElementById('svc_part_cost').value='';
   if(document.getElementById('svc_customer_name')) document.getElementById('svc_customer_name').value='';
@@ -3130,7 +3152,9 @@ async function submitService(){
   updateServiceProfitPreview();
 }
 
+let saleProfitVisible = false;
 function openSaleModal(id){
+  saleProfitVisible = false;
   const it = items.find(i=>i.id===id);
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -3145,7 +3169,8 @@ function openSaleModal(id){
       </div>
       <label>Sale Price (per piece) — change here to give a discount</label>
       <input id="salePriceInput" type="number" inputmode="decimal" value="${it.sell}" oninput="updateSalePricePreview('${id}')">
-      <div style="text-align:center; margin-bottom:16px; font-family:'JetBrains Mono'; color:var(--green)">Profit: <span id="profitPreview">${fmtMoney(it.sell-it.cost)}</span></div>
+      <div id="profitPreviewWrap" ondblclick="toggleSaleProfitPreview()" style="text-align:center; margin-bottom:2px; font-family:'JetBrains Mono'; color:var(--green); cursor:pointer; user-select:none;"><span id="profitPreview" data-amt="${it.sell-it.cost}">*****</span></div>
+      <div id="profitPreviewHint" style="text-align:center; font-size:10px; color:var(--muted); margin-bottom:14px;">Double-tap to reveal</div>
       <label>Customer Name (optional)</label>
       <input id="saleCustomerName" list="customerDatalist" placeholder="e.g. Ahmed Bhai" oninput="autofillCustomerPhone('saleCustomerName','saleCustomerPhone')">
       <label>Customer Phone Number (optional)</label>
@@ -3216,7 +3241,21 @@ function updateSalePricePreview(id){
   const overlay = document.querySelector('.modal-overlay');
   const q = parseInt(overlay.dataset.qty);
   const price = parseFloat(document.getElementById('salePriceInput').value)||0;
-  document.getElementById('profitPreview').textContent = fmtMoney((price-it.cost)*q);
+  const amt = (price-it.cost)*q;
+  const el = document.getElementById('profitPreview');
+  if(el){
+    el.dataset.amt = amt;
+    el.textContent = saleProfitVisible ? ('Profit: '+fmtMoney(amt)) : '*****';
+  }
+}
+function toggleSaleProfitPreview(){
+  saleProfitVisible = !saleProfitVisible;
+  const el = document.getElementById('profitPreview');
+  if(!el) return;
+  const amt = parseFloat(el.dataset.amt)||0;
+  el.textContent = saleProfitVisible ? ('Profit: '+fmtMoney(amt)) : '*****';
+  const hint = document.getElementById('profitPreviewHint');
+  if(hint) hint.textContent = saleProfitVisible ? '' : 'Double-tap to reveal';
 }
 async function confirmSale(id){
   const overlay = document.querySelector('.modal-overlay');
@@ -4866,6 +4905,16 @@ document.addEventListener('wheel', e=>{
     await switchView('dashboard');
   }
 })();
+</script>
+<script>
+  // Register service worker for PWA installability (Android/Chrome install prompt)
+  if('serviceWorker' in navigator){
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch((err) => {
+        console.warn('Service worker registration failed:', err);
+      });
+    });
+  }
 </script>
 </body>
 </html>
