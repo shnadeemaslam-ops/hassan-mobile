@@ -519,12 +519,46 @@ function moveSubTypeOrder(name, dir){
 let reportDate = todayStr();
 let reportPeriod = 'daily';
 let reportMonth = todayStr().slice(0,7);
+let reportWeek = getISOWeekStr(new Date());
 let reportSubTab = 'overview';
 let advanceSort = 'sale';
 
 function todayStr(){
   const d = new Date();
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+// ---- Week helpers: weeks always run Monday -> Sunday (ISO 8601), matching <input type="week"> ----
+function getISOWeekStr(date){
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dayNum = d.getDay() || 7; // Sunday -> 7
+  d.setDate(d.getDate() + 4 - dayNum); // move to this week's Thursday
+  const yearStart = new Date(d.getFullYear(), 0, 1);
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return d.getFullYear() + '-W' + String(weekNo).padStart(2, '0');
+}
+function getMondayFromISOWeekStr(weekStr){
+  const [yearPart, weekPart] = weekStr.split('-W');
+  const year = Number(yearPart), week = Number(weekPart);
+  const jan1 = new Date(year, 0, 1);
+  const jan1Day = jan1.getDay() || 7;
+  const week1Monday = new Date(year, 0, 1 + (jan1Day <= 4 ? 1 - jan1Day : 8 - jan1Day));
+  const monday = new Date(week1Monday);
+  monday.setDate(week1Monday.getDate() + (week - 1) * 7);
+  return monday;
+}
+function getWeekDateStrings(weekStr){
+  const monday = getMondayFromISOWeekStr(weekStr);
+  const dates = [];
+  for(let i=0;i<7;i++){
+    const d = new Date(monday);
+    d.setDate(d.getDate()+i);
+    dates.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'));
+  }
+  return dates;
+}
+function formatWeekLabel(weekStr){
+  const dates = getWeekDateStrings(weekStr);
+  return `${dates[0]} to ${dates[6]} (Mon–Sun)`;
 }
 function fmtMoney(n){ return 'Rs '+Number(n).toLocaleString('en-US',{maximumFractionDigits:0}); }
 function highlightModels(models, query){
@@ -3358,14 +3392,7 @@ function getSaleCategory(s){
 }
 function getReportDateRange(){
   if(reportPeriod==='weekly'){
-    const end = new Date(reportDate+'T00:00:00');
-    const dates = [];
-    for(let i=6;i>=0;i--){
-      const d = new Date(end);
-      d.setDate(d.getDate()-i);
-      dates.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'));
-    }
-    return dates;
+    return getWeekDateStrings(reportWeek);
   }
   if(reportPeriod==='monthly'){
     const [y,m] = reportMonth.split('-').map(Number);
@@ -3402,9 +3429,10 @@ function getPrevPeriodDates(){
     return [ymd(d)];
   }
   if(reportPeriod==='weekly'){
-    const end = new Date(reportDate+'T00:00:00'); end.setDate(end.getDate()-7);
+    const monday = getMondayFromISOWeekStr(reportWeek);
+    const prevMonday = new Date(monday); prevMonday.setDate(prevMonday.getDate()-7);
     const dates = [];
-    for(let i=6;i>=0;i--){ const d=new Date(end); d.setDate(d.getDate()-i); dates.push(ymd(d)); }
+    for(let i=0;i<7;i++){ const d=new Date(prevMonday); d.setDate(d.getDate()+i); dates.push(ymd(d)); }
     return dates;
   }
   let [y,m] = reportMonth.split('-').map(Number);
@@ -3540,7 +3568,12 @@ async function renderReport(){
   if(reportPeriod==='daily'){
     pickerHtml = `<label>Select Date</label><input type="date" id="reportDateInput" value="${reportDate}" max="${todayStr()}">`;
   } else if(reportPeriod==='weekly'){
-    pickerHtml = `<label>Week Ending</label><input type="date" id="reportDateInput" value="${reportDate}" max="${todayStr()}">`;
+    pickerHtml = `<label>Select Week</label>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <button class="secondary" style="padding:8px 12px; flex-shrink:0;" onclick="shiftReportWeek(-1)">◀</button>
+        <input type="week" id="reportWeekInput" value="${reportWeek}" max="${getISOWeekStr(new Date())}" style="flex:1;">
+        <button class="secondary" style="padding:8px 12px; flex-shrink:0;" onclick="shiftReportWeek(1)" ${reportWeek===getISOWeekStr(new Date())?'disabled':''}>▶</button>
+      </div>`;
   } else {
     pickerHtml = `<label>Select Month</label><input type="month" id="reportMonthInput" value="${reportMonth}" max="${todayStr().slice(0,7)}">`;
   }
@@ -3557,6 +3590,10 @@ async function renderReport(){
     document.getElementById('reportMonthInput').addEventListener('change', e=>{
       reportMonth = e.target.value; renderReportBody();
     });
+  } else if(reportPeriod==='weekly'){
+    document.getElementById('reportWeekInput').addEventListener('change', e=>{
+      if(e.target.value){ reportWeek = e.target.value; renderReportBody(); }
+    });
   } else {
     document.getElementById('reportDateInput').addEventListener('change', e=>{
       reportDate = e.target.value;
@@ -3571,6 +3608,15 @@ let advanceCategory = null;
 let advancePartType = null;
 let advanceSubPartType = null;
 function setReportPeriod(p){ reportPeriod = p; renderReport(); }
+function shiftReportWeek(dir){
+  const monday = getMondayFromISOWeekStr(reportWeek);
+  monday.setDate(monday.getDate() + dir*7);
+  const newWeek = getISOWeekStr(monday);
+  const curWeek = getISOWeekStr(new Date());
+  if(newWeek > curWeek) return; // don't allow navigating into the future
+  reportWeek = newWeek;
+  renderReport();
+}
 function setReportSubTab(t){ reportSubTab = t; if(t==='advance'){ advanceCategory=null; advancePartType=null; advanceSubPartType=null; } renderReportBody(); }
 function setAdvanceSort(s){ advanceSort = s; renderReportBody(); }
 function drillAdvance(level, name){
@@ -3683,7 +3729,7 @@ async function renderReportBody(){
   const sales = await fetchReportSales();
   const totalSale = sales.reduce((s,x)=>s+x.totalSell,0);
   const totalProfit = sales.reduce((s,x)=>s+x.totalProfit,0);
-  const periodLabel = reportPeriod==='daily' ? reportDate : (reportPeriod==='weekly' ? `Week ending ${reportDate}` : reportMonth);
+  const periodLabel = reportPeriod==='daily' ? reportDate : (reportPeriod==='weekly' ? formatWeekLabel(reportWeek) : reportMonth);
 
   const subTabsHtml = `
     <div class="chips" style="margin-bottom:10px;">
@@ -4144,20 +4190,23 @@ let expenseFilter = 'all';
 let expensePeriod = 'all';
 let expenseReportDate = todayStr();
 let expenseReportMonth = todayStr().slice(0,7);
+let expenseReportWeek = getISOWeekStr(new Date());
 const EXPENSE_CATEGORIES = ['Daily Expense','Shop Expense'];
 function getExpenseDateRange(){
   if(expensePeriod==='weekly'){
-    const end = new Date(expenseReportDate+'T00:00:00');
-    const dates = [];
-    for(let i=6;i>=0;i--){
-      const d = new Date(end);
-      d.setDate(d.getDate()-i);
-      dates.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'));
-    }
-    return dates;
+    return getWeekDateStrings(expenseReportWeek);
   }
   if(expensePeriod==='daily') return [expenseReportDate];
   return null;
+}
+function shiftExpenseReportWeek(dir){
+  const monday = getMondayFromISOWeekStr(expenseReportWeek);
+  monday.setDate(monday.getDate() + dir*7);
+  const newWeek = getISOWeekStr(monday);
+  const curWeek = getISOWeekStr(new Date());
+  if(newWeek > curWeek) return;
+  expenseReportWeek = newWeek;
+  renderExpense();
 }
 async function renderExpense(){
   let list = expenseEntries;
@@ -4172,11 +4221,17 @@ async function renderExpense(){
   const totalFiltered = list.reduce((s,e)=>s+e.amount,0);
 
   const catLabel = expenseFilter!=='all' ? ` — ${expenseFilter}` : '';
-  const periodLabel = expensePeriod==='daily' ? ` (${expenseReportDate})` : expensePeriod==='weekly' ? ` (week ending ${expenseReportDate})` : expensePeriod==='monthly' ? ` (${expenseReportMonth})` : '';
+  const periodLabel = expensePeriod==='daily' ? ` (${expenseReportDate})` : expensePeriod==='weekly' ? ` (${formatWeekLabel(expenseReportWeek)})` : expensePeriod==='monthly' ? ` (${expenseReportMonth})` : '';
 
   let pickerHtml = '';
-  if(expensePeriod==='daily' || expensePeriod==='weekly'){
+  if(expensePeriod==='daily'){
     pickerHtml = `<input type="date" id="expenseDateInput" value="${expenseReportDate}" max="${todayStr()}">`;
+  } else if(expensePeriod==='weekly'){
+    pickerHtml = `<div style="display:flex; align-items:center; gap:8px;">
+        <button class="secondary" style="padding:8px 12px; flex-shrink:0;" onclick="shiftExpenseReportWeek(-1)">◀</button>
+        <input type="week" id="expenseWeekInput" value="${expenseReportWeek}" max="${getISOWeekStr(new Date())}" style="flex:1;">
+        <button class="secondary" style="padding:8px 12px; flex-shrink:0;" onclick="shiftExpenseReportWeek(1)" ${expenseReportWeek===getISOWeekStr(new Date())?'disabled':''}>▶</button>
+      </div>`;
   } else if(expensePeriod==='monthly'){
     pickerHtml = `<input type="month" id="expenseMonthInput" value="${expenseReportMonth}" max="${todayStr().slice(0,7)}">`;
   }
@@ -4209,9 +4264,13 @@ async function renderExpense(){
   `;
   document.getElementById('view').innerHTML = html;
 
-  if(expensePeriod==='daily' || expensePeriod==='weekly'){
+  if(expensePeriod==='daily'){
     document.getElementById('expenseDateInput').addEventListener('change', e=>{
       expenseReportDate = e.target.value; renderExpense();
+    });
+  } else if(expensePeriod==='weekly'){
+    document.getElementById('expenseWeekInput').addEventListener('change', e=>{
+      if(e.target.value){ expenseReportWeek = e.target.value; renderExpense(); }
     });
   } else if(expensePeriod==='monthly'){
     document.getElementById('expenseMonthInput').addEventListener('change', e=>{
