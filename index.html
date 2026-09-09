@@ -1868,7 +1868,9 @@ function renderDashSearchResults(){
       const modelsHtml = (i.models&&i.models.length>0) ? `<div class="item-cat" style="margin-top:2px">Fits: ${highlightModels(i.models, q)}</div>` : '';
       return `<div style="padding:8px 0; border-bottom:1px solid var(--border)">
         <div class="item-row">
-          <div class="item-info"><div class="item-name">${i.name}</div><div class="item-cat">${catLabel}</div>${modelsHtml}</div>
+          <div class="item-info"><div class="item-name">${i.name}</div><div class="item-cat">${catLabel}</div>${modelsHtml}
+            <div class="item-prices">Sale Price: <b>${fmtMoney(i.sell)}</b></div>
+          </div>
           <span class="badge ${badgeClass}">${badgeText}</span>
         </div>
         <button class="secondary" style="width:100%; margin-top:8px; font-size:12.5px; padding:8px;" onclick="openItemModal('${i.id}')">Edit</button>
@@ -2231,7 +2233,7 @@ function renderManageCategoriesModal(){
         <div style="display:flex; gap:8px; margin-bottom:10px; align-items:center;">
           <input id="cat_edit_${idx}" value="${c}" style="margin-bottom:0; flex:1">
           <button class="secondary" style="padding:10px 12px" onclick="saveCategoryRename(${idx})">Save</button>
-          <button class="danger-text" onclick="deleteCategoryEntry(${idx})">Delete</button>
+          <button class="danger-text" onclick="confirmDeleteCategoryEntry(${idx})">Delete</button>
         </div>
       `).join('')}
       <button class="secondary" style="width:100%; margin-top:6px" onclick="document.getElementById('manageCatOverlay').remove()">Close</button>
@@ -2300,6 +2302,23 @@ async function saveCategoryRenameRetry(idx){
   }
   renderManageCategoriesModal();
 }
+function confirmDeleteCategoryEntry(idx){
+  const name = categories[idx];
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'deleteCatConfirmOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Delete this Category?</h3>
+      <p style="color:var(--muted); font-size:13.5px; margin-bottom:18px; line-height:1.7;">
+        "${name}" category will be permanently removed. This cannot be undone.
+      </p>
+      <button class="primary" style="background:var(--red)" onclick="document.getElementById('deleteCatConfirmOverlay').remove(); deleteCategoryEntry(${idx})">Yes, Delete It</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="document.getElementById('deleteCatConfirmOverlay').remove()">Cancel</button>
+    </div>`;
+  document.getElementById('app').appendChild(overlay);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
+}
 async function deleteCategoryEntry(idx){
   categories.splice(idx,1);
   await saveCategories();
@@ -2353,7 +2372,7 @@ function renderManageCatModal(cat){
         <div style="display:flex; gap:8px; margin-bottom:10px; align-items:center;">
           <input id="pt_edit_${idx}" value="${p}" style="margin-bottom:0; flex:1">
           <button class="secondary" style="padding:10px 12px" onclick="savePartTypeRename('${cat}',${idx})">Save</button>
-          <button class="danger-text" onclick="deletePartTypeEntry('${cat}',${idx})">Delete</button>
+          <button class="danger-text" onclick="confirmDeletePartTypeEntry('${cat}',${idx})">Delete</button>
         </div>
       `).join('')}
       <button class="secondary" style="width:100%; margin-top:6px" onclick="document.getElementById('manageCatOverlay').remove()">Close</button>
@@ -2379,6 +2398,23 @@ async function savePartTypeRename(cat, idx){
   }
   if(document.getElementById('f_parttype')) populatePartTypeSelect(newVal);
   renderManageCatModal(cat);
+}
+function confirmDeletePartTypeEntry(cat, idx){
+  const name = partTypes[cat][idx];
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'deletePtConfirmOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Delete this Sub-Category?</h3>
+      <p style="color:var(--muted); font-size:13.5px; margin-bottom:18px; line-height:1.7;">
+        "${name}" will be permanently removed. This cannot be undone.
+      </p>
+      <button class="primary" style="background:var(--red)" onclick="document.getElementById('deletePtConfirmOverlay').remove(); deletePartTypeEntry('${cat}',${idx})">Yes, Delete It</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="document.getElementById('deletePtConfirmOverlay').remove()">Cancel</button>
+    </div>`;
+  document.getElementById('app').appendChild(overlay);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
 }
 async function deletePartTypeEntry(cat, idx){
   partTypes[cat].splice(idx,1);
@@ -2441,7 +2477,7 @@ function renderManageSubTypesModal(cat, sub){
         <div style="display:flex; gap:8px; margin-bottom:10px; align-items:center;">
           <input id="st_edit_${idx}" value="${p}" style="margin-bottom:0; flex:1">
           <button class="secondary" style="padding:10px 12px" onclick="saveSubTypeRename('${key}',${idx})">Save</button>
-          <button class="danger-text" onclick="deleteSubTypeEntry('${key}',${idx})">Delete</button>
+          <button class="danger-text" onclick="confirmDeleteSubTypeEntry('${key}',${idx})">Delete</button>
         </div>
       `).join('')}
       <button class="secondary" style="width:100%; margin-top:6px" onclick="document.getElementById('manageCatOverlay').remove()">Close</button>
@@ -2465,6 +2501,23 @@ async function saveSubTypeRename(key, idx){
   const [cat, sub] = key.split('::');
   if(document.getElementById('f_subtype')) populateSubTypeSelect(newVal);
   renderManageSubTypesModal(cat, sub);
+}
+function confirmDeleteSubTypeEntry(key, idx){
+  const name = subPartTypes[key][idx];
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'deleteStConfirmOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Delete this Type?</h3>
+      <p style="color:var(--muted); font-size:13.5px; margin-bottom:18px; line-height:1.7;">
+        "${name}" will be permanently removed. This cannot be undone.
+      </p>
+      <button class="primary" style="background:var(--red)" onclick="document.getElementById('deleteStConfirmOverlay').remove(); deleteSubTypeEntry('${key}',${idx})">Yes, Delete It</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="document.getElementById('deleteStConfirmOverlay').remove()">Cancel</button>
+    </div>`;
+  document.getElementById('app').appendChild(overlay);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
 }
 async function deleteSubTypeEntry(key, idx){
   subPartTypes[key].splice(idx,1);
@@ -3054,7 +3107,7 @@ function renderManageServiceSubTypesModal(type){
         <div style="display:flex; gap:8px; margin-bottom:10px; align-items:center;">
           <input id="svcsub_edit_${idx}" value="${p}" style="margin-bottom:0; flex:1">
           <button class="secondary" style="padding:10px 12px" onclick="saveServiceSubTypeRename('${type}',${idx})">Save</button>
-          <button class="danger-text" onclick="deleteServiceSubTypeEntry('${type}',${idx})">Delete</button>
+          <button class="danger-text" onclick="confirmDeleteServiceSubTypeEntry('${type}',${idx})">Delete</button>
         </div>
       `).join('')}
       <button class="secondary" style="width:100%; margin-top:6px" onclick="document.getElementById('manageSvcSubOverlay').remove()">Close</button>
@@ -3074,6 +3127,23 @@ async function saveServiceSubTypeRename(type, idx){
   }
   if(document.getElementById('svc_subtype')) populateServiceSubTypeSelect(newVal);
   renderManageServiceSubTypesModal(type);
+}
+function confirmDeleteServiceSubTypeEntry(type, idx){
+  const name = serviceSubTypes[type][idx];
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'deleteSvcSubConfirmOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Delete this Repair Type?</h3>
+      <p style="color:var(--muted); font-size:13.5px; margin-bottom:18px; line-height:1.7;">
+        "${name}" will be permanently removed. This cannot be undone.
+      </p>
+      <button class="primary" style="background:var(--red)" onclick="document.getElementById('deleteSvcSubConfirmOverlay').remove(); deleteServiceSubTypeEntry('${type}',${idx})">Yes, Delete It</button>
+      <button class="secondary" style="width:100%; margin-top:10px" onclick="document.getElementById('deleteSvcSubConfirmOverlay').remove()">Cancel</button>
+    </div>`;
+  document.getElementById('app').appendChild(overlay);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
 }
 async function deleteServiceSubTypeEntry(type, idx){
   serviceSubTypes[type].splice(idx,1);
@@ -3428,8 +3498,18 @@ function getPrevPeriodDates(){
   let [y,m] = reportMonth.split('-').map(Number);
   m -= 1; if(m===0){ m=12; y-=1; }
   const daysInMonth = new Date(y,m,0).getDate();
+  // Fair comparison: if the report month is still in progress (i.e. it's the current
+  // month), only compare against the SAME number of days from last month — not last
+  // month's full total. e.g. if today is the 5th, compare this month's 5 days against
+  // only the 1st-5th of last month, not the whole of last month.
+  const curMonthStr = todayStr().slice(0,7);
+  let limitDays = daysInMonth;
+  if(reportMonth === curMonthStr){
+    const elapsedDays = parseInt(todayStr().slice(8,10),10);
+    limitDays = Math.min(daysInMonth, elapsedDays);
+  }
   const dates = [];
-  for(let d=1; d<=daysInMonth; d++) dates.push(y+'-'+String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0'));
+  for(let d=1; d<=limitDays; d++) dates.push(y+'-'+String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0'));
   return dates;
 }
 async function fetchTotalsForDates(dates){
@@ -3521,6 +3601,17 @@ async function renderTrendSection(sales, totalSale, totalProfit){
   const saleChange = pctChangeText(totalSale, prevTotals.sale);
   const profitChange = pctChangeText(totalProfit, prevTotals.profit);
   const avgLabelSuffix = reportPeriod==='daily' ? ' (Last 7 Days)' : '';
+  // When the current month is still in progress, make it explicit that the "vs
+  // Previous Month" row is comparing the same number of days on both sides —
+  // otherwise "5 days vs whole last month" reads as a full-month comparison.
+  let compareSuffix = '';
+  if(reportPeriod==='monthly'){
+    const curMonthStr = todayStr().slice(0,7);
+    if(reportMonth === curMonthStr){
+      const elapsedDays = parseInt(todayStr().slice(8,10),10);
+      compareSuffix = ` (first ${elapsedDays} day${elapsedDays===1?'':'s'} of each)`;
+    }
+  }
   return `
     <div class="section-title">Sales & Profit Trend</div>
     <div class="card" style="padding:14px 8px 10px;">
@@ -3530,8 +3621,8 @@ async function renderTrendSection(sales, totalSale, totalProfit){
       <div class="sale-list-item"><div>Avg Daily Sale${avgLabelSuffix}</div><div class="t" style="font-weight:600; font-family:'JetBrains Mono',monospace;">${fmtMoney(avgSale)}</div></div>
       <div class="sale-list-item"><div>Avg Daily Profit${avgLabelSuffix}</div><div class="t profit-val" data-amt="${avgProfit}" style="color:var(--green); cursor:pointer; font-weight:600; font-family:'JetBrains Mono',monospace;" onclick="toggleProfitValue()">${profitVisible?fmtMoney(avgProfit):'••••'}</div></div>
       <div class="sale-list-item"><div>Best Day</div><div class="t" style="font-weight:600;">${bestDay && bestDay.sale>0 ? bestDay.date+' · '+fmtMoney(bestDay.sale) : '—'}</div></div>
-      <div class="sale-list-item"><div>Sale vs Previous ${periodWord}</div><div class="t" style="font-weight:600; color:${saleChange.color};">${saleChange.text}</div></div>
-      <div class="sale-list-item"><div>Profit vs Previous ${periodWord}</div><div class="t" style="font-weight:600; color:${profitChange.color};">${profitChange.text}</div></div>
+      <div class="sale-list-item"><div>Sale vs Previous ${periodWord}${compareSuffix}</div><div class="t" style="font-weight:600; color:${saleChange.color};">${saleChange.text}</div></div>
+      <div class="sale-list-item"><div>Profit vs Previous ${periodWord}${compareSuffix}</div><div class="t" style="font-weight:600; color:${profitChange.color};">${profitChange.text}</div></div>
     </div>`;
 }
 function renderCategoryBreakdown(sales){
@@ -3835,12 +3926,13 @@ async function renderReportBody(){
     html += '<div class="card">';
     sales.forEach(s=>{
       const tag = s.isService ? '<span class="badge ok" style="padding:2px 7px; font-size:10px; margin-left:4px;">Service</span>' : (s.isPart ? '<span class="badge low" style="padding:2px 7px; font-size:10px; margin-left:4px;">Part Repair</span>' : '');
+      const creditTag = s.paymentMethod==='credit' ? '<span class="badge low" style="padding:2px 7px; font-size:10px; margin-left:4px;">📒 Udhaar</span>' : (s.paymentMethod==='partial' ? '<span class="badge low" style="padding:2px 7px; font-size:10px; margin-left:4px;">🔀 Partial Udhaar</span>' : '');
       const dateTag = reportPeriod!=='daily' ? `<span style="color:var(--muted)"> · ${s._date}</span>` : '';
       const checked = reportSelectedSales.has(`${s._date}::${s.id}`) ? 'checked' : '';
       html += `<div class="sale-list-item">
         <div style="display:flex; align-items:center; gap:10px;">
           <input type="checkbox" ${checked} onchange="toggleReportSaleSelection('${s._date}','${s.id}')" style="width:18px; height:18px; accent-color:var(--accent); flex-shrink:0;">
-          <div><div>${s.name} × ${s.qty} ${tag}</div><div class="t">${s.time}${dateTag}</div></div>
+          <div><div>${s.name} × ${s.qty} ${tag}${creditTag}</div><div class="t">${s.time}${dateTag}</div></div>
         </div>
         <div style="text-align:right; display:flex; align-items:center; gap:10px;">
           <div><div><b>${fmtMoney(s.totalSell)}</b></div><div class="t profit-val" data-amt="${s.totalProfit}" style="color:var(--green); cursor:pointer" onclick="toggleProfitValue()">${profitVisible ? '+'+fmtMoney(s.totalProfit) : '••••'}</div></div>
