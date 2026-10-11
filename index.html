@@ -3073,7 +3073,7 @@ function renderServiceForm(){
       <input id="svc_amount" type="number" inputmode="decimal" placeholder="0" oninput="updateServiceProfitPreview()">
       <label>Quantity</label>
       <input id="svc_qty" type="number" inputmode="numeric" value="1" oninput="updateServiceProfitPreview()">
-      <div style="text-align:center; margin-bottom:16px; font-family:'JetBrains Mono'; color:var(--green)">Profit: <span id="svcProfitPreview">Rs 0</span></div>
+      <div style="text-align:center; margin-bottom:16px; font-family:'JetBrains Mono'; color:var(--green)">Profit: <span id="svcProfitPreview" data-amt="0" onclick="profitPreviewTap(this)" style="cursor:pointer; user-select:none; touch-action:manipulation">••••••</span></div>
       <label>Customer Name (optional)</label>
       <input id="svc_customer_name" list="customerDatalist" placeholder="e.g. Ahmed Bhai" oninput="autofillCustomerPhone('svc_customer_name','svc_customer_phone')">
       <label>Customer Phone Number (optional)</label>
@@ -3193,12 +3193,27 @@ async function deleteServiceSubTypeEntry(type, idx){
   if(document.getElementById('svc_subtype')) populateServiceSubTypeSelect();
   renderManageServiceSubTypesModal(type);
 }
+/* Profit preview in sale boxes: hidden (••••••) by default, double-tap to show/hide.
+   State lives on the element, so every freshly opened sale box starts hidden. */
+function setProfitPreview(id, amt){
+  const el = document.getElementById(id); if(!el) return;
+  el.dataset.amt = amt;
+  el.textContent = el.dataset.shown==='1' ? fmtMoney(amt) : '••••••';
+}
+function profitPreviewTap(el){
+  const now = Date.now();
+  if(el._lastTap && now - el._lastTap < 400){
+    el._lastTap = 0;
+    el.dataset.shown = el.dataset.shown==='1' ? '0' : '1';
+    el.textContent = el.dataset.shown==='1' ? fmtMoney(parseFloat(el.dataset.amt)||0) : '••••••';
+  } else { el._lastTap = now; }
+}
 function updateServiceProfitPreview(){
   const amount = parseFloat(document.getElementById('svc_amount').value)||0;
   const qty = parseInt(document.getElementById('svc_qty').value)||1;
   const partCostEl = document.getElementById('svc_part_cost');
   const partCost = partCostEl ? (parseFloat(partCostEl.value)||0) : 0;
-  document.getElementById('svcProfitPreview').textContent = fmtMoney((amount-partCost)*qty);
+  setProfitPreview('svcProfitPreview', (amount-partCost)*qty);
   if(document.getElementById('svcPartialWrap') && document.getElementById('svcPartialWrap').style.display!=='none') updateServicePartialPreview();
 }
 function setServicePaymentMethod(method){
@@ -3313,7 +3328,7 @@ function openSaleModal(id){
       </div>
       <label>Sale Price (per piece) — change here to give a discount</label>
       <input id="salePriceInput" type="number" inputmode="decimal" value="${it.sell}" oninput="updateSalePricePreview('${id}')">
-      <div style="text-align:center; margin-bottom:16px; font-family:'JetBrains Mono'; color:var(--green)">Profit: <span id="profitPreview">${fmtMoney(it.sell-it.cost)}</span></div>
+      <div style="text-align:center; margin-bottom:16px; font-family:'JetBrains Mono'; color:var(--green)">Profit: <span id="profitPreview" data-amt="${it.sell-it.cost}" onclick="profitPreviewTap(this)" style="cursor:pointer; user-select:none; touch-action:manipulation">••••••</span></div>
       <label>Customer Name (optional)</label>
       <input id="saleCustomerName" list="customerDatalist" placeholder="e.g. Ahmed Bhai" oninput="autofillCustomerPhone('saleCustomerName','saleCustomerPhone')">
       <label>Customer Phone Number (optional)</label>
@@ -3384,7 +3399,7 @@ function updateSalePricePreview(id){
   const overlay = document.querySelector('.modal-overlay');
   const q = parseInt(overlay.dataset.qty);
   const price = parseFloat(document.getElementById('salePriceInput').value)||0;
-  document.getElementById('profitPreview').textContent = fmtMoney((price-it.cost)*q);
+  setProfitPreview('profitPreview', (price-it.cost)*q);
 }
 async function confirmSale(id){
   const overlay = document.querySelector('.modal-overlay');
