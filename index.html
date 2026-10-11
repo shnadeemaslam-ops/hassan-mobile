@@ -672,13 +672,27 @@ async function sha256(text){
   const buf = await crypto.subtle.digest('SHA-256', enc);
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
+/* SAFETY: a failed read used to return [] and the next save then overwrote the whole
+   day's sales with that empty list. Now a failed read blocks saving that day. */
+const salesLoadFailed = {};
 async function loadSales(date){
   try{
     const doc = await db.collection('sales').doc(date).get();
+    delete salesLoadFailed[date];
     return doc.exists && doc.data().list ? doc.data().list : [];
-  }catch(e){ console.error(e); return []; }
+  }catch(e){ console.error(e); salesLoadFailed[date] = true; return []; }
+}
+/* New sales are ADDED atomically (arrayUnion) together with the stock change in ONE batch,
+   so stock and dashboard can never go out of sync, and two quick sales can't overwrite each other. */
+async function appendSalesAtomic(date, entries, itemsToSave){
+  const clean = entries.map(e=>JSON.parse(JSON.stringify(e)));
+  const b = db.batch();
+  b.set(db.collection('sales').doc(date), {list: firebase.firestore.FieldValue.arrayUnion(...clean)}, {merge:true});
+  (itemsToSave||[]).forEach(it=>b.set(db.collection('items').doc(it.id), JSON.parse(JSON.stringify(it))));
+  await b.commit();
 }
 async function saveSales(date, arr){
+  if(salesLoadFailed[date]){ showToast('Sales for '+date+' could not be read — save blocked to protect your data. Check internet and retry.'); return; }
   try{ await db.collection('sales').doc(date).set({list: arr}); }
   catch(e){ showToast('Sale could not be saved — check internet connection'); }
 }
@@ -2978,14 +2992,10 @@ async function checkoutBill(action){
 
   try{
     await saveSettings();
-    for(const c of cartSnapshot){
-      const it = items.find(i=>i.id===c.itemId);
-      if(it) await saveItem(it);
-    }
     let customerId = null;
-    if(customerName) customerId = await findOrCreateCustomer(customerName, customerPhone);
+    if(customerName){ try{ customerId = await findOrCreateCustomer(customerName, customerPhone); }catch(e){ console.error(e); } }
 
-    const sales = await loadSales(dateToUse);
+    const sales = [];
     const now = new Date();
     const timeStr = String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
     const newSaleEntries = cartSnapshot.map(c=>{
@@ -3014,8 +3024,7 @@ async function checkoutBill(action){
 
     const originalLineItems = newSaleEntries.map(s=>({...s}));
     if(discount>0) applyDiscountToLineItems(newSaleEntries, discount);
-    sales.push(...newSaleEntries);
-    await saveSales(dateToUse, sales);
+    await appendSalesAtomic(dateToUse, newSaleEntries, cartSnapshot.map(c=>items.find(i=>i.id===c.itemId)).filter(Boolean));
 
     const subtotalForRecord = originalLineItems.reduce((sum,li)=>sum+li.totalSell, 0);
     await saveInvoiceRecord({
@@ -3276,7 +3285,7 @@ async function submitService(){
   if(customerName) customerId = await findOrCreateCustomer(customerName, customerPhone);
 
   const dateToUse = saleDate || todayStr();
-  const sales = await loadSales(dateToUse);
+  const sales = [];
   const now = new Date();
   const saleId = uid();
   sales.push({
@@ -3287,7 +3296,7 @@ async function submitService(){
     isService: true, category: type, serviceSubType: subType||null, customerName: customerName||null, customerId,
     paymentMethod: svcPaymentMethod, cashReceived, creditAmount
   });
-  await saveSales(dateToUse, sales);
+  await appendSalesAtomic(dateToUse, sales);
 
   if(svcPaymentMethod==='credit' || svcPaymentMethod==='partial'){
     const desc = svcPaymentMethod==='partial'
@@ -3444,11 +3453,11 @@ async function confirmSale(id){
   refreshCurrentView();
 
   (async()=>{
+    let sold = false;
     try{
-      await saveItem(it);
       let customerId = null;
-      if(customerName) customerId = await findOrCreateCustomer(customerName, customerPhone);
-      const sales = await loadSales(dateToUse);
+      if(customerName){ try{ customerId = await findOrCreateCustomer(customerName, customerPhone); }catch(e){ console.error(e); } }
+      const sales = [];
       const now = new Date();
       sales.push({
         id: saleId, itemId: it.id, name: it.name, qty,
@@ -3458,7 +3467,8 @@ async function confirmSale(id){
         category: it.category, customerName: customerName||null, customerId,
         paymentMethod, cashReceived, creditAmount
       });
-      await saveSales(dateToUse, sales);
+      await appendSalesAtomic(dateToUse, sales, [it]);
+      sold = true;
 
       if(paymentMethod==='credit' || paymentMethod==='partial'){
         const desc = paymentMethod==='partial'
@@ -3474,7 +3484,8 @@ async function confirmSale(id){
       refreshCurrentView(); // make sure whichever view is open (Dashboard/Report/Sale) reflects the new sale right away
     }catch(e){
       console.error(e);
-      showToast('Sale could not be saved — check internet connection');
+      if(!sold){ it.qty += qty; refreshCurrentView(); }
+      showToast('Sale could not be saved — stock restored. Check internet connection');
     }
   })();
 }
@@ -4803,7 +4814,7 @@ async function confirmDeliverRepair(id){
 
   const customerId = await findOrCreateCustomer(j.customerName, j.phone);
   const dateToUse = todayStr();
-  const sales = await loadSales(dateToUse);
+  const sales = [];
   const now = new Date();
   sales.push({
     id: uid(), itemId: null, name: j.mobileModel + (j.note ? ' — '+j.note : ' — Repair'),
@@ -4812,7 +4823,7 @@ async function confirmDeliverRepair(id){
     time: String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0'),
     isService: true, category: 'Mobile Repair', customerName: j.customerName, customerId
   });
-  await saveSales(dateToUse, sales);
+  await appendSalesAtomic(dateToUse, sales);
   const overlay = document.querySelector('.modal-overlay');
   if(overlay) overlay.remove();
   showToast('Marked as delivered — added to today\'s sale');
